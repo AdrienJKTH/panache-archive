@@ -39,6 +39,14 @@ def daily_means(hourly: FloatArray) -> FloatArray:
     return np.where(enough, total / np.maximum(count, 1), np.nan)
 
 
+def daily_sums(hourly: FloatArray) -> FloatArray:
+    """UTC daily totals, such as rain; NaN where any hour is missing, since a total cannot skip
+    hours as a mean can."""
+    days = _whole_days(hourly)
+    by_day = hourly.reshape(days, HOURS_PER_DAY, *hourly.shape[1:])
+    return np.asarray(by_day.sum(axis=1), dtype=np.float64)
+
+
 def daily_max_8h_means(hourly: FloatArray, evening: FloatArray | None = None) -> FloatArray:
     """UTC daily maxima of the running 8-hour means; NaN where a day has too few valid means.
 

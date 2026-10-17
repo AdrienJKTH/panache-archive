@@ -56,24 +56,31 @@ class Job:
     months: tuple[int, ...] = ALL_MONTHS
 
     def __post_init__(self) -> None:
-        first = self.months[0] if self.months else 0
-        if not 1 <= first <= 12 or self.months != tuple(range(first, first + len(self.months))):
-            raise ValueError(f"months {self.months} are not consecutive months of a year")
-        if self.months[-1] > 12:
-            raise ValueError(f"months {self.months} run past December")
+        check_months(self.months)
 
     @property
     def asset_name(self) -> str:
         """Such as `cams-pm10-2021-validated.parquet`, or `cams-pm10-2021-02-validated.parquet`
         for February alone."""
-        first, last = self.months[0], self.months[-1]
-        if self.months == ALL_MONTHS:
-            span = ""
-        elif first == last:
-            span = f"-{first:02d}"
-        else:
-            span = f"-{first:02d}-{last:02d}"
-        return f"cams-{self.variable}-{self.year}{span}-{self.stream.label}.parquet"
+        return f"cams-{self.variable}-{self.year}{span(self.months)}-{self.stream.label}.parquet"
+
+
+def check_months(months: tuple[int, ...]) -> None:
+    """Assets cover consecutive months of one year."""
+    first = months[0] if months else 0
+    if not 1 <= first <= 12 or months != tuple(range(first, first + len(months))):
+        raise ValueError(f"months {months} are not consecutive months of a year")
+    if months[-1] > 12:
+        raise ValueError(f"months {months} run past December")
+
+
+def span(months: tuple[int, ...]) -> str:
+    """How an asset's name tells its months: nothing for a whole year, `-02` for February,
+    `-02-04` for February to April."""
+    first, last = months[0], months[-1]
+    if months == ALL_MONTHS:
+        return ""
+    return f"-{first:02d}" if first == last else f"-{first:02d}-{last:02d}"
 
 
 def build(
@@ -108,7 +115,7 @@ def build(
         first.lats,
         first.lons,
         date(job.year, job.months[0], 1),
-        {statistic: np.concatenate(days) for statistic, days in columns.items()},
+        {statistic.value: np.concatenate(days) for statistic, days in columns.items()},
         metadata=_metadata(job, box),
     )
     path = out_dir / job.asset_name
@@ -121,7 +128,7 @@ def to_table(
     lats: FloatArray,
     lons: FloatArray,
     first_day: date,
-    columns: Mapping[Statistic, FloatArray],
+    columns: Mapping[str, FloatArray],
     *,
     metadata: Mapping[str, Any],
 ) -> pa.Table:
@@ -139,9 +146,9 @@ def to_table(
         "lon": pa.array(np.tile(np.repeat(lons, days), lats.size)),
         "day": pa.array(np.tile(day_axis, lats.size * lons.size)),
     }
-    for statistic, values in columns.items():
+    for name, values in columns.items():
         flat = np.round(values.transpose(1, 2, 0).ravel(), VALUE_DECIMALS).astype(np.float32)
-        arrays[statistic.value] = pa.array(flat, mask=np.isnan(flat))
+        arrays[name] = pa.array(flat, mask=np.isnan(flat))
     table = pa.table(arrays)
     return table.replace_schema_metadata({METADATA_KEY: json.dumps(metadata).encode()})
 

@@ -15,7 +15,7 @@ from panache_archive.check import (
     rounding_step,
     tolerance,
 )
-from panache_archive.variables import Reanalysis, Statistic, Variable
+from panache_archive.variables import Reanalysis, Variable
 
 FEBRUARY = datetime(2021, 2, 1, tzinfo=UTC)
 LYON = Place("Lyon", 45.76, 4.84)
@@ -32,7 +32,7 @@ def test_an_asset_agrees_with_open_meteo(asset: Path) -> None:
 
     comparisons = compare(asset, [LYON], get=open_meteo)
 
-    assert [c.statistic for c in comparisons] == [Statistic.MEAN, Statistic.MAX_8H_MEAN]
+    assert [c.column for c in comparisons] == ["mean", "max_8h_mean"]
     for c in comparisons:
         assert c.cell == (45.75, 4.85)
         assert c.days == 28
