@@ -38,6 +38,17 @@ gh workflow run cams.yml -f variables=all -f years=all
 
 Labelling a pull request `pilot` tries its code on February 2021 (PM10 and ozone) and attaches the assets to the run.
 
+### The supervisor
+
+The [`Supervise`](.github/workflows/supervise.yml) workflow pilots the runs: every 15 minutes, and whenever a CAMS run ends, it
+
+- launches a CAMS run when assets are missing and none is on (a run builds only what the release lacks, so failures are retried);
+- leaves out an asset that failed 3 times, until someone looks (the CAMS input `skip`);
+- deletes an interim asset once its validated twin is built;
+- reports progress in the issue **Archive progress**: every asset in a grid, the pace and the time left, and a comment on each event (a run ended, an asset stuck, a check that disagrees, the archive complete), which GitHub notifies.
+
+Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps its last snapshot in the issue's body.
+
 ## Development
 
 Python 3.12 with [uv](https://docs.astral.sh/uv/):

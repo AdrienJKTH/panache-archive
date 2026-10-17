@@ -22,14 +22,18 @@ def test_plan_prints_the_missing_assets(
     built = tmp_path / "built.txt"
     built.write_text("cams-pm10-2023-validated.parquet\nother.parquet\n", encoding="utf-8")
 
-    code = cli.main(
-        ["plan", "--variables", "pm10,dust", "--years", "2023-2025", "--built", str(built)]
-    )
+    asked = ["plan", "--variables", "pm10,dust", "--years", "2023-2025", "--built", str(built)]
+
+    code = cli.main([*asked, "--skip", "cams-pm10-2025-interim.parquet,"])
 
     assert code == 0
     assert json.loads(capsys.readouterr().out) == [
-        {"variable": "pm10", "year": 2024, "stream": "validated_reanalysis"},
-        {"variable": "pm10", "year": 2025, "stream": "interim_reanalysis"},
+        {
+            "asset": "cams-pm10-2024-validated.parquet",
+            "variable": "pm10",
+            "year": 2024,
+            "stream": "validated_reanalysis",
+        }
     ]
 
 
@@ -94,3 +98,24 @@ def test_check_reports_and_fails_on_disagreement(
     report = summary.read_text(encoding="utf-8")
     assert report.count("| mean |") == len(PLACES)
     assert report in capsys.readouterr().out + "\n"
+
+
+def test_supervise_writes_its_decision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def complete_years(variable: Variable, stream: Reanalysis) -> frozenset[int]:
+        offered = variable is Variable.PM10 and stream is Reanalysis.VALIDATED
+        return frozenset({2013}) if offered else frozenset()
+
+    monkeypatch.setattr("panache_archive.ads.complete_years", complete_years)
+    state = tmp_path / "state"
+    state.mkdir()
+    for name in ("built", "runs", "jobs", "issue"):
+        (state / f"{name}.json").write_text("[]", encoding="utf-8")
+
+    code = cli.main(["supervise", "--state", str(state), "--out", str(tmp_path / "out")])
+
+    assert code == 0
+    assert "dispatch=True" in capsys.readouterr().out
+    decision = json.loads((tmp_path / "out" / "decision.json").read_text(encoding="utf-8"))
+    assert decision == {"dispatch": True, "skip": [], "delete": []}

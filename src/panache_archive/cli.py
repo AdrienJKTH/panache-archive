@@ -6,9 +6,10 @@ import logging
 import sys
 import tempfile
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
-from panache_archive import ads, check, plan
+from panache_archive import ads, check, plan, supervise
 from panache_archive.build import ALL_MONTHS, Job, build
 from panache_archive.variables import Reanalysis, Variable
 
@@ -26,12 +27,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _plan(args: argparse.Namespace) -> int:
     built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
+    skipped = {name.strip() for name in args.skip.split(",") if name.strip()}
     jobs = plan.wanted(
         plan.parse_variables(args.variables),
         plan.parse_years(args.years),
         ads.complete_years,
     )
-    print(plan.matrix(plan.missing(jobs, built)))
+    print(plan.matrix(plan.missing(jobs, built | skipped)))
     return 0
 
 
@@ -62,6 +64,18 @@ def _check(args: argparse.Namespace) -> int:
     return 0 if agree else 1
 
 
+def _supervise(args: argparse.Namespace) -> int:
+    decision = supervise.supervise(
+        Path(args.state),
+        Path(args.out),
+        at=datetime.now(UTC),
+        supervisor_url=args.url,
+        offered=ads.complete_years,
+    )
+    print(decision)
+    return 0
+
+
 def _months(text: str) -> tuple[int, ...]:
     """`all`, a month such as `2`, or a span such as `2-5`."""
     return ALL_MONTHS if text.strip() == "all" else plan.parse_span(text)
@@ -78,6 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     planning.add_argument("--variables", default="all", help="`all`, or names such as pm10,ozone")
     planning.add_argument("--years", default="all", help="`all`, a year, or a span: 2013-2025")
     planning.add_argument("--built", help="a file listing the assets already built")
+    planning.add_argument("--skip", default="", help="assets to leave out, separated by commas")
     planning.set_defaults(run=_plan)
 
     building = commands.add_parser("build", help="build one asset from the ADS")
@@ -95,6 +110,12 @@ def _parser() -> argparse.ArgumentParser:
     checking.add_argument("assets", nargs="+")
     checking.add_argument("--summary", help="a Markdown file to append the reports to")
     checking.set_defaults(run=_check)
+
+    supervising = commands.add_parser("supervise", help="decide the next step, write the report")
+    supervising.add_argument("--state", required=True, help="what the workflow gathered")
+    supervising.add_argument("--out", required=True, help="where the decision is written")
+    supervising.add_argument("--url", default="", help="this supervisor run's page")
+    supervising.set_defaults(run=_supervise)
     return parser
 
 
