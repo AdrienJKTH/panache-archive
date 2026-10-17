@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from panache_archive import ads
+from panache_archive import ads, web
 from panache_archive.variables import Reanalysis, Variable
 
 
@@ -130,4 +130,4 @@ def test_post_json_sends_the_body(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
 
     assert ads.post_json("https://example.com/c", b"{}") == b'{"year": []}'
-    assert sent == [("https://example.com/c", b"{}", "application/json", ads.TIMEOUT_SECONDS)]
+    assert sent == [("https://example.com/c", b"{}", "application/json", web.TIMEOUT_SECONDS)]

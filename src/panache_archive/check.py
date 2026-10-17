@@ -11,7 +11,6 @@ from __future__ import annotations  # pyarrow's arrays are generic in their stub
 
 import json
 import urllib.parse
-import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -23,13 +22,13 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from panache_archive import web
 from panache_archive.build import VALUE_DECIMALS, read_metadata
 from panache_archive.daily import HOURS_PER_DAY, daily_max_8h_means, daily_means
 from panache_archive.grid import FloatArray, nearest
 from panache_archive.variables import Statistic, Variable, statistics
 
 OPEN_METEO_URL: Final = "https://air-quality-api.open-meteo.com/v1/air-quality"
-TIMEOUT_SECONDS: Final = 60
 STEPS: Final = (1.0, 0.1, 0.01)
 """The rounding steps Open-Meteo may use, coarsest first, in μg/m³."""
 ARCHIVE_ROUNDING: Final = 0.5 * 10**-VALUE_DECIMALS
@@ -77,8 +76,7 @@ class Comparison:
 
 
 def http_get(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as answer:
-        return bytes(answer.read())
+    return web.read(url)
 
 
 def compare(asset: Path, places: Sequence[Place] = PLACES, get: Get = http_get) -> list[Comparison]:
