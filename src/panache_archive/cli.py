@@ -1,6 +1,7 @@
 """Command line: `panache-archive plan`, `build` and `check`, as the workflows run them."""
 
 import argparse
+import io
 import logging
 import sys
 import tempfile
@@ -13,6 +14,8 @@ from panache_archive.variables import Reanalysis, Variable
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8")  # reports hold ✓ and μ, beyond Windows' cp1252
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
