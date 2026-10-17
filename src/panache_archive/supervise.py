@@ -1,7 +1,8 @@
 """The supervisor: it watches the CAMS runs, launches them again until the archive is whole, and
 reports progress in an issue.
 
-The `Supervise` workflow runs it every 15 minutes and whenever a CAMS run ends. Each time, it
+The `Supervise` workflow runs it after each CAMS build job, whenever a CAMS run ends, and every
+15 minutes. Each time, it
 reads the release, the recent CAMS runs with their jobs, and its own last snapshot, kept in the
 issue's body. Then it decides:
 - to dispatch a CAMS run when assets are missing and none runs (a run builds only what the
@@ -319,7 +320,7 @@ def render(now: Assessment, snapshot: Snapshot, at: datetime, supervisor_url: st
         + " · blank: not offered by the ADS",
         "",
         f"Updated {at:%Y-%m-%d %H:%M} UTC by [the supervisor]({supervisor_url}), which runs "
-        "every 15 minutes and whenever a CAMS run ends.",
+        "after each asset and every 15 minutes.",
         "",
         f"<!-- supervisor-state {snapshot.to_json()} -->",
     ]

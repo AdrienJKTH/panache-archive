@@ -1,6 +1,7 @@
 name: Supervise
 
-# The archive's supervisor: every 15 minutes and whenever a CAMS run ends, it launches a CAMS run
+# The archive's supervisor: after each CAMS build job, whenever a CAMS run ends, and every 15
+# minutes (GitHub's cron is late at times), it launches a CAMS run
 # if assets are missing and none is on, leaves out assets that failed 3 times, deletes interim
 # assets once validated twins are built, and reports progress in the issue "Archive progress".
 # The decisions are `panache-archive supervise`'s; this workflow gathers and acts.
