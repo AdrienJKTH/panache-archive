@@ -16,6 +16,7 @@ from typing import Final, Protocol
 
 import cdsapi
 
+from panache_archive import web
 from panache_archive.variables import ADS_NAME, Reanalysis, Variable
 
 DATASET: Final = "cams-europe-air-quality-reanalyses"
@@ -23,7 +24,6 @@ DOI: Final = "10.24381/7cc0465a"
 API_URL: Final = "https://ads.atmosphere.copernicus.eu/api"
 CONSTRAINTS_URL: Final = f"{API_URL}/retrieve/v1/processes/{DATASET}/constraints"
 MONTHS: Final = 12
-TIMEOUT_SECONDS: Final = 60
 
 Request = Mapping[str, list[str]]
 Post = Callable[[str, bytes], bytes]
@@ -50,8 +50,7 @@ def download(request: Request, target: Path) -> None:
 def post_json(url: str, body: bytes) -> bytes:
     """POST a JSON body (the constraints endpoint needs no key)."""
     sent = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(sent, timeout=TIMEOUT_SECONDS) as answer:
-        return bytes(answer.read())
+    return web.read(sent)
 
 
 def complete_years(
