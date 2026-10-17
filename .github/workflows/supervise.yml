@@ -1,0 +1,79 @@
+name: Supervise
+
+# The archive's supervisor: every 15 minutes and whenever a CAMS run ends, it launches a CAMS run
+# if assets are missing and none is on, leaves out assets that failed 3 times, deletes interim
+# assets once validated twins are built, and reports progress in the issue "Archive progress".
+# The decisions are `panache-archive supervise`'s; this workflow gathers and acts.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_run:
+    workflows: [CAMS]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: supervise
+  cancel-in-progress: false
+
+permissions:
+  actions: write # launch CAMS runs
+  contents: write # delete superseded assets
+  issues: write # the progress issue
+
+env:
+  RELEASE: cams-v1
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  supervise:
+    name: Supervise
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Gather the release, the recent CAMS runs and the progress issue
+        run: |
+          mkdir -p state
+          gh release view "$RELEASE" --json assets --jq '[.assets[] | {name, size}]' \
+            > state/built.json || echo '[]' > state/built.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/cams.yml/runs?event=workflow_dispatch&per_page=10" \
+            --jq '[.workflow_runs[] | {id, run_number, status, conclusion, html_url}]' > state/runs.json
+          for id in $(jq -r '.[].id' state/runs.json); do
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100&filter=latest" \
+              --jq ".jobs[] | {run_id: $id, name, status, conclusion, started_at, completed_at,
+                failed_step: ([.steps[] | select(.conclusion == \"failure\") | .name] | first)}"
+          done | jq -s . > state/jobs.json
+          gh issue list --label progress --state all --limit 1 --json number,body > state/issue.json
+      - name: Decide
+        run: >
+          uv run panache-archive supervise --state state --out decision
+          --url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Act
+        run: |
+          jq -r '.delete[]' decision/decision.json | while read -r asset; do
+            gh release delete-asset "$RELEASE" "$asset" --yes
+          done
+          if [ "$(jq -r .dispatch decision/decision.json)" = true ]; then
+            gh workflow run cams.yml --ref main -f variables=all -f years=all \
+              -f skip="$(jq -r '.skip | join(",")' decision/decision.json)"
+          fi
+          issue=$(jq -r '.[0].number // empty' state/issue.json)
+          if [ -z "$issue" ]; then
+            url=$(gh issue create --title "Archive progress" --label progress \
+              --body-file decision/report.md)
+            issue=${url##*/}
+          else
+            gh issue edit "$issue" --body-file decision/report.md
+          fi
+          for comment in decision/comments/*.md; do
+            [ -e "$comment" ] || continue
+            gh issue comment "$issue" --body-file "$comment"
+          done
+          cat decision/report.md >> "$GITHUB_STEP_SUMMARY"

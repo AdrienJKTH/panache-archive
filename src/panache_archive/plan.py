@@ -37,9 +37,17 @@ def missing(jobs: Iterable[Job], built: Collection[str]) -> list[Job]:
 
 
 def matrix(jobs: Iterable[Job]) -> str:
-    """The jobs as the JSON list of a matrix's `include`."""
+    """The jobs as the JSON list of a matrix's `include`; `asset` names each job."""
     return json.dumps(
-        [{"variable": j.variable.value, "year": j.year, "stream": j.stream.value} for j in jobs]
+        [
+            {
+                "asset": j.asset_name,
+                "variable": j.variable.value,
+                "year": j.year,
+                "stream": j.stream.value,
+            }
+            for j in jobs
+        ]
     )
 
 

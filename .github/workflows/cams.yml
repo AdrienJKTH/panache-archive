@@ -14,6 +14,9 @@ on:
       years:
         description: "`all`, a year, or a span such as 2013-2025"
         default: all
+      skip:
+        description: Assets to leave out, separated by commas (the supervisor's stuck ones)
+        default: ""
   pull_request:
     types: [labeled]
 
@@ -60,13 +63,14 @@ jobs:
         env:
           VARIABLES: ${{ inputs.variables }}
           YEARS: ${{ inputs.years }}
+          SKIP: ${{ inputs.skip }}
         run: |
-          matrix=$(uv run panache-archive plan --variables "$VARIABLES" --years "$YEARS" --built built.txt)
+          matrix=$(uv run panache-archive plan --variables "$VARIABLES" --years "$YEARS"             --built built.txt --skip "$SKIP")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq -r '"\(length) assets to build"' >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    name: ${{ matrix.variable }} ${{ matrix.year }}
+    name: ${{ matrix.asset }}
     needs: plan
     if: needs.plan.outputs.matrix != '[]'
     runs-on: ubuntu-24.04

@@ -49,7 +49,12 @@ def test_the_matrix_lists_each_job() -> None:
     matrix = plan.matrix([Job(Variable.OZONE, 2021, Reanalysis.VALIDATED)])
 
     assert json.loads(matrix) == [
-        {"variable": "ozone", "year": 2021, "stream": "validated_reanalysis"}
+        {
+            "asset": "cams-ozone-2021-validated.parquet",
+            "variable": "ozone",
+            "year": 2021,
+            "stream": "validated_reanalysis",
+        }
     ]
     assert plan.matrix([]) == "[]"
 
