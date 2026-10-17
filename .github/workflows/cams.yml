@@ -1,0 +1,135 @@
+name: CAMS
+
+# Builds the archive's CAMS assets on GitHub's machines: each downloads whole European months
+# from the ADS (~0.8 GB each), keeps France's daily statistics (~8 MB a year) and publishes them
+# to the release. A run builds only what the release lacks, so it can be run again after a
+# failure. Labelling a pull request `pilot` tries its code on February 2021 first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variables:
+        description: "`all`, or Open-Meteo names separated by commas, such as pm10,ozone"
+        default: all
+      years:
+        description: "`all`, a year, or a span such as 2013-2025"
+        default: all
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: cams-${{ github.event_name == 'workflow_dispatch' && 'build' || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: cams-v1
+  CDSAPI_URL: https://ads.atmosphere.copernicus.eu/api
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "CAMS Europe daily means over France"
+          --notes-file docs/cams-release.md
+      - name: List the assets already built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+      - name: Plan
+        id: plan
+        env:
+          VARIABLES: ${{ inputs.variables }}
+          YEARS: ${{ inputs.years }}
+        run: |
+          matrix=$(uv run panache-archive plan --variables "$VARIABLES" --years "$YEARS" --built built.txt)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) assets to build"' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.variable }} ${{ matrix.year }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build
+        env:
+          CDSAPI_KEY: ${{ secrets.ADS_KEY }}
+          VARIABLE: ${{ matrix.variable }}
+          YEAR: ${{ matrix.year }}
+          STREAM: ${{ matrix.stream }}
+        run: >
+          uv run panache-archive build --variable "$VARIABLE" --year "$YEAR" --stream "$STREAM"
+          --out dist --workdir "$RUNNER_TEMP"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.parquet --clobber
+      - name: Check against Open-Meteo
+        run: uv run panache-archive check dist/*.parquet --summary "$GITHUB_STEP_SUMMARY"
+
+  pilot:
+    name: Pilot, February 2021
+    if: github.event_name == 'pull_request' && github.event.label.name == 'pilot'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build PM10 and ozone for February 2021
+        env:
+          CDSAPI_KEY: ${{ secrets.ADS_KEY }}
+        run: |
+          for variable in pm10 ozone; do
+            uv run panache-archive build --variable "$variable" --year 2021 --months 2 \
+              --out dist --workdir "$RUNNER_TEMP"
+          done
+          { echo '| Asset | Size |'; echo '|---|---|'
+            du -h dist/*.parquet | awk '{ sub("dist/", "", $2); print "| " $2 " | " $1 " |" }'
+            echo; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check against Open-Meteo
+        run: uv run panache-archive check dist/*.parquet --summary "$GITHUB_STEP_SUMMARY"
+      - name: Keep the assets
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pilot
+          path: dist/
+          if-no-files-found: ignore

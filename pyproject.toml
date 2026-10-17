@@ -1,0 +1,78 @@
+[project]
+name = "panache-archive"
+version = "0.1.0"
+description = "Daily air quality over France from the CAMS European reanalyses, built with GitHub Actions."
+authors = [
+    { name = "Adrien", email = "adjouanny@gmail.com" }
+]
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "cdsapi>=0.7.7",
+    "netcdf4>=1.7.4",
+    "numpy>=2.5.4",
+    "pyarrow>=26.0.0",
+]
+
+[project.scripts]
+panache-archive = "panache_archive.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.22,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pyarrow-stubs>=20.0.0.20260819",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "N",       # pep8-naming
+    "B",       # bugbear
+    "UP",      # pyupgrade
+    "SIM",     # simplify
+    "C4",      # comprehensions
+    "RET",     # return statements
+    "ARG",     # unused arguments
+    "PTH",     # prefer pathlib
+    "PT",      # pytest style
+    "RUF",     # ruff-specific
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+# cdsapi ships no type information: its one call (`ads.download`) is typed Any.
+[[tool.mypy.overrides]]
+module = ["cdsapi", "cdsapi.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "-ra"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["panache_archive"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
