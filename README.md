@@ -1,6 +1,6 @@
 # Panache archive
 
-Daily air quality over France since 2013, from the CAMS European air quality reanalyses, for **Panache**, the pollution episode detective.
+Daily air quality and weather over France since 2013, from the CAMS European air quality reanalyses and ERA5, for **Panache**, the pollution episode detective.
 
 Panache explains pollution episodes at a place: was a day unusual, and why? It reads each place's history from Open-Meteo, whose free tier allows only a few new places a day. This archive holds the same history for every cell of France at once, so that the history costs no call, and France can be drawn as a map.
 
@@ -49,6 +49,27 @@ The [`Supervise`](.github/workflows/supervise.yml) workflow pilots the runs: eve
 
 Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps its last snapshot in the issue's body.
 
+## ERA5 daily weather
+
+The release [`era5-v1`](../../releases/tag/era5-v1) holds one asset per year, such as `era5-2021.parquet`: France's daily weather from ERA5 (0.25°, 43 by 63 grid points, the same box), with the nine daily variables of Panache's weather model:
+
+| Column | Unit | |
+|---|---|---|
+| `temperature_2m_mean` | °C | The grid's: Open-Meteo's archive API adds an altitude correction, a constant at a place (+1.22 °C at Lyon) |
+| `relative_humidity_2m_mean` | % | From hourly temperature and dew point (Magnus) |
+| `wind_speed_10m_mean` | m/s | From each hour's components |
+| `wind_direction_10m_dominant` | ° | Of the day's mean wind, where it blows from |
+| `pressure_msl_mean` | hPa | |
+| `precipitation_sum` | mm | The 24 hours ending in the day (01:00 to 24:00 UTC): ERA5's accumulations end at their time stamp |
+| `shortwave_radiation_sum` | MJ/m² | Same hours |
+| `cloud_cover_mean` | % | |
+| `boundary_layer_height` | m | The day's mean, as Panache averages it |
+
+- **Source**: Open-Meteo keeps ERA5 hourly in its public bucket on AWS Open Data, read over HTTPS with no account and no quota (`year_YYYY.om` files, then 504-hour chunks), with [omfiles](https://github.com/open-meteo/python-omfiles).
+- **Days**: UTC; a mean needs 18 hours, a total all 24, as in the CAMS assets.
+- **Check**: against the archive API at the four places. Temperature agrees once its constant offset is removed. Humidity is judged by correlation (r ≥ 0.99), since the API derives it from altitude-corrected temperature and dew point. The other columns agree within rounding.
+- The [`ERA5`](.github/workflows/era5.yml) workflow builds the years the release lacks, from 2013 to the last complete year; labelling a pull request `pilot-era5` tries it on January 2021.
+
 ## Development
 
 Python 3.12 with [uv](https://docs.astral.sh/uv/):
@@ -69,3 +90,7 @@ uv run panache-archive build --variable pm10 --year 2021 --months 2
 The code is under the MIT licence. The data are derived from the CAMS European air quality reanalyses ([DOI 10.24381/7cc0465a](https://doi.org/10.24381/7cc0465a)), under the CC-BY 4.0 licence, and are shared under the same licence:
 
 > Contains modified Copernicus Atmosphere Monitoring Service information [2026]. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains.
+
+ERA5 assets are derived from ERA5 hourly data on single levels ([DOI 10.24381/cds.adbb2d47](https://doi.org/10.24381/cds.adbb2d47)), CC-BY 4.0, as stored by [Open-Meteo](https://open-meteo.com/) (CC-BY 4.0):
+
+> Contains modified Copernicus Climate Change Service information [2026]. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains. Weather data by Open-Meteo.com.

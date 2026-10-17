@@ -1,0 +1,121 @@
+name: ERA5
+
+# Builds the archive's ERA5 assets: France's daily weather for each year, read from Open-Meteo's
+# public bucket over HTTPS (no account, no quota; ~20 MB of compressed hours per variable and
+# year), published to the release era5-v1 and checked against Open-Meteo's archive API. A run
+# builds only the years the release lacks. Labelling a pull request `pilot-era5` tries its code
+# on January 2021 first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "`all` (2013 to the last complete year), a year, or a span such as 2013-2025"
+        default: all
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: era5-${{ github.event_name == 'workflow_dispatch' && 'build' || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: era5-v1
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "ERA5 daily weather over France"
+          --notes-file docs/era5-release.md
+      - name: List the assets already built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+      - name: Plan
+        id: plan
+        env:
+          YEARS: ${{ inputs.years }}
+        run: |
+          matrix=$(uv run panache-archive era5-plan --years "$YEARS" --built built.txt)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) years to build"' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.asset }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build
+        env:
+          YEAR: ${{ matrix.year }}
+        run: uv run panache-archive era5-build --year "$YEAR" --out dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.parquet --clobber
+      - name: Check against Open-Meteo
+        run: uv run panache-archive check dist/*.parquet --summary "$GITHUB_STEP_SUMMARY"
+
+  pilot:
+    name: Pilot, January 2021
+    if: github.event_name == 'pull_request' && github.event.label.name == 'pilot-era5'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build January 2021
+        run: |
+          uv run panache-archive era5-build --year 2021 --months 1 --out dist
+          { echo '| Asset | Size |'; echo '|---|---|'
+            du -h dist/*.parquet | awk '{ sub("dist/", "", $2); print "| " $2 " | " $1 " |" }'
+            echo; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check against Open-Meteo
+        run: uv run panache-archive check dist/*.parquet --summary "$GITHUB_STEP_SUMMARY"
+      - name: Keep the asset
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pilot-era5
+          path: dist/
+          if-no-files-found: ignore

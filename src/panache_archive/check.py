@@ -56,11 +56,11 @@ Grenoble once got a neighbour from one of them."""
 
 @dataclass(frozen=True, slots=True)
 class Comparison:
-    """One place and statistic: the archive's days against Open-Meteo's."""
+    """One place and column: the archive's days against Open-Meteo's."""
 
     place: Place
     cell: tuple[float, float]
-    statistic: Statistic
+    column: str
     days: int
     """Days with a value on both sides."""
     max_difference: float
@@ -69,10 +69,29 @@ class Comparison:
     correlation: float
     archive_peak: float
     open_meteo_peak: float
+    offset: float = 0.0
+    """A constant difference removed before comparing (ERA5 temperature: the API corrects it for
+    the asked point's altitude)."""
+
+    min_correlation: float | None = None
+    """When set, agreement is judged by correlation instead of by difference."""
 
     @property
     def agrees(self) -> bool:
-        return self.days > 0 and self.max_difference <= self.tolerance
+        """Within the tolerance, give or take float noise (two values rounded to 0.01 may
+        differ by 0.0100001); or correlated enough, when `min_correlation` is set."""
+        if self.days == 0:
+            return False
+        if self.min_correlation is not None:
+            return self.correlation >= self.min_correlation
+        return self.max_difference <= self.tolerance + 1e-6
+
+    @property
+    def criterion(self) -> str:
+        """What agreement means here, for the report."""
+        if self.min_correlation is not None:
+            return f"r ≥ {self.min_correlation:.2f}"
+        return f"{self.tolerance:.3f}"
 
 
 def http_get(url: str) -> bytes:
@@ -101,8 +120,10 @@ def compare(asset: Path, places: Sequence[Place] = PLACES, get: Get = http_get) 
             reference = (
                 daily_means(hourly) if statistic is Statistic.MEAN else daily_max_8h_means(hourly)
             )
-            archived = _floats(rows[statistic.value])
-            comparisons.append(_compare(place, cell, statistic, archived, reference, allowed))
+            archived = floats(rows[statistic.value])
+            comparisons.append(
+                compare_days(place, cell, statistic.value, archived, reference, allowed)
+            )
     return comparisons
 
 
@@ -152,46 +173,64 @@ def render(asset_name: str, comparisons: Sequence[Comparison]) -> str:
     lines = [
         f"### `{asset_name}` against Open-Meteo",
         "",
-        "| Place | Cell | Statistic | Days | Max difference | Tolerance | r "
+        "| Place | Cell | Column | Days | Max difference | Tolerance | r "
         "| Peak, archive / Open-Meteo | |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for c in comparisons:
         lines.append(
-            f"| {c.place.name} | {c.cell[0]:.2f}, {c.cell[1]:.2f} | {c.statistic.value} "
-            f"| {c.days} | {c.max_difference:.2f} | {c.tolerance:.3f} | {c.correlation:.3f} "
+            f"| {c.place.name} | {c.cell[0]:.2f}, {c.cell[1]:.2f} | {c.column} "
+            f"| {c.days} | {c.max_difference:.2f}{_offset(c.offset)} | {c.criterion} "
+            f"| {c.correlation:.3f} "
             f"| {c.archive_peak:.1f} / {c.open_meteo_peak:.1f} | {'✓' if c.agrees else '✗'} |"
         )
     return "\n".join(lines) + "\n"
 
 
-def _floats(column: pa.ChunkedArray[Any]) -> FloatArray:
+def _offset(offset: float) -> str:
+    return f" (offset {offset:+.2f})" if offset else ""
+
+
+def floats(column: pa.ChunkedArray[Any]) -> FloatArray:
     """A float column, nulls as NaN."""
     return np.asarray(column.to_numpy(zero_copy_only=False), dtype=np.float64)
 
 
-def _compare(
+def compare_days(
     place: Place,
     cell: tuple[float, float],
-    statistic: Statistic,
+    column: str,
     archived: FloatArray,
     reference: FloatArray,
     allowed: float,
+    *,
+    offset: bool = False,
+    circular: bool = False,
+    min_correlation: float | None = None,
 ) -> Comparison:
+    """The archive's days against Open-Meteo's. `offset` removes their median difference first;
+    `circular` compares angles in degrees (wind directions), with no correlation;
+    `min_correlation` judges by correlation instead of by difference."""
     if archived.shape != reference.shape:
         raise ValueError(f"{archived.size} archived days for {reference.size} from Open-Meteo")
     both = ~np.isnan(archived) & ~np.isnan(reference)
     a, r = archived[both], reference[both]
     days = int(both.sum())
-    spread = days > 1 and float(np.std(a)) > 0 and float(np.std(r)) > 0
+    differences = a - r
+    if circular:
+        differences = (differences + 180) % 360 - 180
+    removed = float(np.median(differences)) if offset and days else 0.0
+    spread = not circular and days > 1 and float(np.std(a)) > 0 and float(np.std(r)) > 0
     return Comparison(
         place=place,
         cell=cell,
-        statistic=statistic,
+        column=column,
         days=days,
-        max_difference=float(np.max(np.abs(a - r))) if days else float("nan"),
+        max_difference=float(np.max(np.abs(differences - removed))) if days else float("nan"),
         tolerance=allowed,
         correlation=float(np.corrcoef(a, r)[0, 1]) if spread else float("nan"),
         archive_peak=float(np.max(a)) if days else float("nan"),
         open_meteo_peak=float(np.max(r)) if days else float("nan"),
+        offset=removed,
+        min_correlation=min_correlation,
     )

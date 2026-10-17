@@ -1,16 +1,19 @@
-"""Command line: `panache-archive plan`, `build` and `check`, as the workflows run them."""
+"""Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan` and
+`era5-build`, as the workflows run them."""
 
 import argparse
+import asyncio
 import io
+import json
 import logging
 import sys
 import tempfile
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
-from panache_archive import ads, check, plan, supervise
-from panache_archive.build import ALL_MONTHS, Job, build
+from panache_archive import ads, check, era5, plan, supervise
+from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
 from panache_archive.variables import Reanalysis, Variable
 
 
@@ -54,7 +57,10 @@ def _check(args: argparse.Namespace) -> int:
     agree = True
     for asset in args.assets:
         path = Path(asset)
-        comparisons = check.compare(path, get=check.http_get)
+        if read_metadata(path).get("source") == "era5":
+            comparisons = era5.compare(path, get=check.http_get)
+        else:
+            comparisons = check.compare(path, get=check.http_get)
         report = check.render(path.name, comparisons)
         print(report)
         if args.summary:
@@ -74,6 +80,28 @@ def _supervise(args: argparse.Namespace) -> int:
     )
     print(decision)
     return 0
+
+
+def _era5_plan(args: argparse.Namespace) -> int:
+    built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
+    last = era5.last_complete_year(date.today())
+    years = plan.parse_years(args.years)
+    wanted = sorted(y for y in (years or range(era5.FIRST_YEAR, last + 1)) if y <= last)
+    jobs = era5.missing_years(wanted, built)
+    print(json.dumps([{"asset": job.asset_name, "year": job.year} for job in jobs]))
+    return 0
+
+
+def _era5_build(args: argparse.Namespace) -> int:
+    job = era5.Era5Job(year=args.year, months=_months(args.months))
+    path = asyncio.run(_era5_build_with_bucket(job, Path(args.out)))
+    print(path)
+    return 0
+
+
+async def _era5_build_with_bucket(job: era5.Era5Job, out: Path) -> Path:
+    async with era5.HttpBucket() as bucket:
+        return await era5.build(job, out, bucket)
 
 
 def _months(text: str) -> tuple[int, ...]:
@@ -116,6 +144,17 @@ def _parser() -> argparse.ArgumentParser:
     supervising.add_argument("--out", required=True, help="where the decision is written")
     supervising.add_argument("--url", default="", help="this supervisor run's page")
     supervising.set_defaults(run=_supervise)
+
+    era5_planning = commands.add_parser("era5-plan", help="print the ERA5 years still missing")
+    era5_planning.add_argument("--years", default="all", help="`all`, a year, or a span")
+    era5_planning.add_argument("--built", help="a file listing the assets already built")
+    era5_planning.set_defaults(run=_era5_plan)
+
+    era5_building = commands.add_parser("era5-build", help="build one ERA5 year from the bucket")
+    era5_building.add_argument("--year", required=True, type=int)
+    era5_building.add_argument("--months", default="all", help="`all`, a month, or a span: 2-5")
+    era5_building.add_argument("--out", default="dist", help="where the asset is written")
+    era5_building.set_defaults(run=_era5_build)
     return parser
 
 

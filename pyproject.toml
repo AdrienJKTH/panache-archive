@@ -8,9 +8,12 @@ authors = [
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.14.5",
     "cdsapi>=0.7.7",
+    "fsspec>=2026.9.0",
     "netcdf4>=1.7.4",
     "numpy>=2.5.4",
+    "omfiles>=1.2.0",
     "pyarrow>=26.0.0",
 ]
 
@@ -57,9 +60,10 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 
-# cdsapi ships no type information: its one call (`ads.download`) is typed Any.
+# cdsapi and fsspec ship no type information: their few calls (`ads.download`, `era5._Http`)
+# are typed Any.
 [[tool.mypy.overrides]]
-module = ["cdsapi", "cdsapi.*"]
+module = ["cdsapi", "cdsapi.*", "fsspec", "fsspec.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
