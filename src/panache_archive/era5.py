@@ -247,6 +247,8 @@ async def hours(
     values = np.concatenate(parts, axis=2)
     if values.shape[2] != end - first:
         raise ValueError(f"{variable}: {values.shape[2]} hours, expected {end - first}")
+    if np.isnan(values).all():
+        raise ValueError(f"{variable}: none of the {end - first} hours is in the bucket")
     return np.transpose(values, (2, 0, 1))
 
 
@@ -265,18 +267,31 @@ async def _year_part(
         start = _hour(date(year, 1, 1))
         return await bucket.read(year_file, rows, cols, slice(first - start, end - start))
     reads = [
-        bucket.read(
-            f"{variable}/chunk_{n}.om",
-            rows,
-            cols,
-            slice(
-                max(first, n * CHUNK_HOURS) - n * CHUNK_HOURS,
-                min(end, (n + 1) * CHUNK_HOURS) - n * CHUNK_HOURS,
-            ),
-        )
+        _chunk(bucket, variable, n, first, end, rows, cols)
         for n in range(first // CHUNK_HOURS, (end - 1) // CHUNK_HOURS + 1)
     ]
     return np.concatenate(await asyncio.gather(*reads), axis=2)
+
+
+async def _chunk(
+    bucket: Bucket,
+    variable: Hourly,
+    n: int,
+    first: int,
+    end: int,
+    rows: slice,
+    cols: slice,
+) -> FloatArray:
+    """The hours of `[first, end)` in chunk `n`, as `[lat, lon, hour]`. A chunk the bucket lacks
+    is a gap in Open-Meteo's own data, such as the boundary layer of early 2024: its hours are
+    missing (NaN), as the archive API answers nulls for them."""
+    path = f"{variable}/chunk_{n}.om"
+    start = max(first, n * CHUNK_HOURS) - n * CHUNK_HOURS
+    stop = min(end, (n + 1) * CHUNK_HOURS) - n * CHUNK_HOURS
+    if not await bucket.exists(path):
+        logger.warning("%s is not in the bucket: %d hours missing", path, stop - start)
+        return np.full((rows.stop - rows.start, cols.stop - cols.start, stop - start), np.nan)
+    return await bucket.read(path, rows, cols, slice(start, stop))
 
 
 def relative_humidity(temperature: FloatArray, dew_point: FloatArray) -> FloatArray:

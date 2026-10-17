@@ -52,14 +52,20 @@ def synthetic(variable: Hourly, hours: NDArray[np.int64], y: int, x: int) -> Flo
 class FakeBucket:
     """Serves `synthetic` values, from year files for `year_files` and from chunks otherwise."""
 
-    def __init__(self, year_files: set[int] | None = None, short: bool = False) -> None:
+    def __init__(
+        self, year_files: set[int] | None = None, short: bool = False, gaps: set[str] | None = None
+    ) -> None:
         self.year_files = year_files or set()
         self.short = short
+        self.gaps = gaps or set()
+        """Chunk files the bucket lacks."""
         self.reads: list[str] = []
 
     async def exists(self, path: str) -> bool:
         found = re.search(r"year_(\d{4})\.om$", path)
-        return found is not None and int(found.group(1)) in self.year_files
+        if found is None:
+            return path not in self.gaps
+        return int(found.group(1)) in self.year_files
 
     async def read(self, path: str, rows: slice, cols: slice, hours: slice) -> FloatArray:
         self.reads.append(path)
@@ -391,3 +397,27 @@ def test_the_http_bucket_reads_through_omfiles(monkeypatch: pytest.MonkeyPatch) 
     assert opened == ["https://bucket/temperature_2m/year_2021.om"]
     assert Reader.closed
     assert Session.closed
+
+
+def test_a_chunk_the_bucket_lacks_leaves_its_hours_missing() -> None:
+    # Like the boundary layer of early 2024, which Open-Meteo does not have either.
+    bucket = FakeBucket(gaps={"boundary_layer_height/chunk_887.om"})
+    job = Era5Job(2021, (1,))
+
+    values = run(era5.hourly(bucket, Hourly.BOUNDARY_LAYER_HEIGHT, job, LYON_ROWS, LYON_COLS))
+
+    # Chunk 887 ends at hour 447,552: the first 480 hours of January 2021.
+    assert np.isnan(values[:480]).all()
+    assert not np.isnan(values[480:]).any()
+    assert bucket.reads == ["boundary_layer_height/chunk_888.om"]
+
+
+def test_a_variable_wholly_missing_is_an_error() -> None:
+    gaps = {"cloud_cover/chunk_887.om", "cloud_cover/chunk_888.om"}
+
+    with pytest.raises(ValueError, match="none of the 744 hours"):
+        run(
+            era5.hourly(
+                FakeBucket(gaps=gaps), Hourly.CLOUD_COVER, Era5Job(2021, (1,)), LYON_ROWS, LYON_COLS
+            )
+        )
