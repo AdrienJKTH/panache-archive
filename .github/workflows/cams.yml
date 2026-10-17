@@ -76,6 +76,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     permissions:
+      actions: write # wake the supervisor up
       contents: write
     strategy:
       fail-fast: false
@@ -104,6 +105,13 @@ jobs:
         run: gh release upload "$RELEASE" dist/*.parquet --clobber
       - name: Check against Open-Meteo
         run: uv run panache-archive check dist/*.parquet --summary "$GITHUB_STEP_SUMMARY"
+      - name: Wake the supervisor up
+        # Its report then follows each asset; GitHub keeps one pending run of a concurrency
+        # group, so jobs ending together cost one report. The 15-minute cron stays a fallback.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run supervise.yml --ref main
 
   pilot:
     name: Pilot, February 2021

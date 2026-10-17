@@ -40,7 +40,7 @@ Labelling a pull request `pilot` tries its code on February 2021 (PM10 and ozone
 
 ### The supervisor
 
-The [`Supervise`](.github/workflows/supervise.yml) workflow pilots the runs: every 15 minutes, and whenever a CAMS run ends, it
+The [`Supervise`](.github/workflows/supervise.yml) workflow pilots the runs: after each build job, whenever a CAMS run ends, and every 15 minutes (GitHub's cron is late at times), it
 
 - launches a CAMS run when assets are missing and none is on (a run builds only what the release lacks, so failures are retried);
 - leaves out an asset that failed 3 times, until someone looks (the CAMS input `skip`);
