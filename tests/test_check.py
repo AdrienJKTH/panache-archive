@@ -6,7 +6,15 @@ import pytest
 
 from helpers import FakeAds, FakeOpenMeteo, open_meteo_answer
 from panache_archive.build import Job, build
-from panache_archive.check import PLACES, Place, compare, open_meteo_hourly, render
+from panache_archive.check import (
+    PLACES,
+    Place,
+    compare,
+    open_meteo_hourly,
+    render,
+    rounding_step,
+    tolerance,
+)
 from panache_archive.variables import Reanalysis, Statistic, Variable
 
 FEBRUARY = datetime(2021, 2, 1, tzinfo=UTC)
@@ -57,6 +65,7 @@ def test_the_report_is_a_markdown_table(asset: Path) -> None:
 
     assert report.startswith("### `cams-ozone-2021-02-validated.parquet` against Open-Meteo\n")
     assert "| Lyon | 45.75, 4.85 | mean | 28 |" in report
+    assert "| 0.055 |" in report
     assert report.count("✓") == 2
 
 
@@ -84,3 +93,31 @@ def test_nulls_from_open_meteo_read_as_nan() -> None:
 
     assert np.isnan(hourly[3])
     assert np.nansum(hourly) == 23
+
+
+def test_ozone_rounded_to_whole_units_still_agrees(asset: Path) -> None:
+    comparisons = compare(asset, [LYON], get=FakeOpenMeteo(Variable.OZONE, decimals=0))
+
+    for c in comparisons:
+        assert c.tolerance == pytest.approx(0.505)
+        assert 0.06 < c.max_difference <= 0.505
+        assert c.agrees
+
+
+@pytest.mark.parametrize(
+    ("values", "step"),
+    [
+        ([61.0, 62.0, np.nan, 0.0], 1.0),
+        ([61.0, 62.3, 0.1], 0.1),
+        ([0.01, 0.25, 3.0], 0.01),
+        ([0.123, 1.0], 0.0),
+        ([np.nan], 1.0),
+    ],
+)
+def test_the_rounding_step_is_read_from_the_values(values: list[float], step: float) -> None:
+    assert rounding_step(np.array(values)) == step
+
+
+def test_the_tolerance_is_half_a_step_plus_the_archive_rounding() -> None:
+    assert tolerance(0.1) == pytest.approx(0.055)
+    assert tolerance(1.0) == pytest.approx(0.505)

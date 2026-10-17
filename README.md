@@ -15,7 +15,7 @@ One asset per variable and year in the release [`cams-v1`](../../releases/tag/ca
 | `mean` | float32 | Daily mean, μg/m³; null with fewer than 18 hours |
 | `max_8h_mean` | float32 | Ozone only: the day's highest running 8-hour mean, μg/m³ |
 
-- **Box**: 41 to 51.5° N, 5.5° W to 10° E (mainland France and Corsica, sea included): 105 by 155 cells, roughly 10 MB a variable-year.
+- **Box**: 41 to 51.5° N, 5.5° W to 10° E (mainland France and Corsica, sea included): 105 by 155 cells, about 10 MB a variable-year (20 for ozone, with its two columns).
 - **Variables**, by their Open-Meteo names: `pm10`, `pm2_5`, `nitrogen_dioxide`, `ozone` since 2013; `carbon_monoxide`, `sulphur_dioxide` since 2016; `ammonia`, `dust`, `secondary_inorganic_aerosol` since 2018; `pm10_wildfires` since 2019.
 - **Source**: the ensemble median at the surface. The validated reanalysis where it exists (until 2024 today), the interim one after it (`-interim` in the name). An interim year is built again once the validated stream covers it.
 - **Days** follow Panache's rules, which are those of EU Directive 2008/50/EC: UTC days, 75 % of the data (18 hours for a daily mean; 6 hours for an 8-hour mean and 18 such means for the day's maximum). Each 8-hour mean belongs to the day it ends; 1 January misses the evening before, as in Panache.
@@ -28,7 +28,7 @@ The ADS cannot cut its reanalysis to an area: every request returns the whole Eu
 
 1. **Plan**: asks the ADS which years each variable offers whole, and lists those the release lacks.
 2. **Build**, one job per variable-year: downloads each month, keeps the box, sums up its days, deletes the month, then publishes the asset.
-3. **Check**: compares each asset with what Open-Meteo serves at Paris, Lyon, Grenoble and Bordeaux. Both come from the same reanalysis, so their daily values must agree within 0.1 μg/m³.
+3. **Check**: compares each asset with what Open-Meteo serves at Paris, Lyon, Grenoble and Bordeaux. Both come from the same reanalysis, so their daily values must agree but for rounding: Open-Meteo rounds its hours to 0.1 μg/m³, or to whole μg/m³ for some variables such as ozone, so a day may differ by half that step (plus 0.005 for the archive's own rounding).
 
 Run it from the Actions tab, or:
 

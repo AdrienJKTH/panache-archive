@@ -101,14 +101,18 @@ class FakeAds:
         netcdf.unlink()
 
 
-def open_meteo_answer(variable: Variable, first_hour: datetime, values: FloatArray) -> bytes:
-    """Open-Meteo's JSON for an hourly series, values rounded to 0.1 as it rounds them."""
+def open_meteo_answer(
+    variable: Variable, first_hour: datetime, values: FloatArray, decimals: int = 1
+) -> bytes:
+    """Open-Meteo's JSON for an hourly series, values rounded as it rounds them."""
     times = [first_hour + timedelta(hours=h) for h in range(values.size)]
     return json.dumps(
         {
             "hourly": {
                 "time": [f"{t:%Y-%m-%dT%H:%M}" for t in times],
-                variable.value: [None if np.isnan(v) else round(float(v), 1) for v in values],
+                variable.value: [
+                    None if np.isnan(v) else round(float(v), decimals) for v in values
+                ],
             }
         }
     ).encode()
@@ -117,8 +121,8 @@ def open_meteo_answer(variable: Variable, first_hour: datetime, values: FloatArr
 class FakeOpenMeteo:
     """Serves the synthetic hours of the nearest cell, rounded as Open-Meteo rounds them."""
 
-    def __init__(self, variable: Variable, offset: float = 0.0) -> None:
-        self.variable, self.offset = variable, offset
+    def __init__(self, variable: Variable, offset: float = 0.0, decimals: int = 1) -> None:
+        self.variable, self.offset, self.decimals = variable, offset, decimals
         self.queries: list[dict[str, str]] = []
 
     def __call__(self, url: str) -> bytes:
@@ -130,4 +134,4 @@ class FakeOpenMeteo:
         lat = nearest(GRID_LATS, float(query["latitude"]))
         lon = nearest(normalise_longitudes(GRID_LONS), float(query["longitude"]))
         values = synthetic(first, hours, GRID_LATS, GRID_LONS)[:, lat, lon]
-        return open_meteo_answer(self.variable, first, values + self.offset)
+        return open_meteo_answer(self.variable, first, values + self.offset, self.decimals)
