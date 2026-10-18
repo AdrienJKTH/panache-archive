@@ -10,12 +10,13 @@ One asset per variable and year in the release [`cams-v1`](../../releases/tag/ca
 
 | Column | Type | |
 |---|---|---|
-| `lat`, `lon` | float64 | Cell centre, in degrees (cells of 0.1°, centred on x.x5°) |
+| `lat`, `lon` | float64 | Cell centre, in degrees: cells of 0.1°, centred on x.x0° until 2019 and on x.x5° since 2020 (see below) |
 | `day` | date32 | UTC day |
 | `mean` | float32 | Daily mean, μg/m³; null with fewer than 18 hours |
 | `max_8h_mean` | float32 | Ozone only: the day's highest running 8-hour mean, μg/m³ |
 
-- **Box**: 41 to 51.5° N, 5.5° W to 10° E (mainland France and Corsica, sea included): 105 by 155 cells, about 10 MB a variable-year (20 for ozone, with its two columns).
+- **Box**: 41 to 51.5° N, 5.5° W to 10° E (mainland France and Corsica, sea included): about 10 MB a variable-year (20 for ozone, with its two columns).
+- **Two grids**: the reanalysis moved its grid on 1 January 2020, half a cell north-east. Until 2019 the cells are centred on x.x0° (104 by 154 cells in the box, 41.1 to 51.4° N; Lyon's on 45.8° N, 4.8° E); since 2020 on x.x5° (105 by 155, 41.05 to 51.45° N; Lyon's on 45.75° N, 4.85° E). Each asset keeps its year's own grid. To compare years cell by cell, each of today's cells covers a quarter of four old ones.
 - **Variables**, by their Open-Meteo names: `pm10`, `pm2_5`, `nitrogen_dioxide`, `ozone` since 2013; `carbon_monoxide`, `sulphur_dioxide` since 2016; `ammonia`, `dust`, `secondary_inorganic_aerosol` since 2018; `pm10_wildfires` since 2019.
 - **Source**: the ensemble median at the surface. The validated reanalysis where it exists (until 2024 today), the interim one after it (`-interim` in the name). An interim year is built again once the validated stream covers it.
 - **Days** follow Panache's rules, which are those of EU Directive 2008/50/EC: UTC days, 75 % of the data (18 hours for a daily mean; 6 hours for an 8-hour mean and 18 such means for the day's maximum). Each 8-hour mean belongs to the day it ends; 1 January misses the evening before, as in Panache.
