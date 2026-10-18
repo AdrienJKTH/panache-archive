@@ -1,7 +1,8 @@
 """The France box of the archive, and where it lies in the CAMS Europe grid.
 
-The grid is regular at 0.1°, with cell centres on x.x5° (Lyon's cell is centred on 45.75° N,
-4.85° E). A cell belongs to the box when its centre lies inside.
+The grid is regular at 0.1°. Its centres are on x.x5° since 2020 (Lyon's cell is centred on
+45.75° N, 4.85° E), and were on x.x0° until 2019 (45.8° N, 4.8° E): each file is cut on its own
+grid. A cell belongs to the box when its centre lies inside.
 """
 
 from dataclasses import dataclass
