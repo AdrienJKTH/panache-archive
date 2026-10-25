@@ -1,18 +1,19 @@
-"""Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan` and
-`era5-build`, as the workflows run them."""
+"""Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
+`era5-build` and `mirror`, as the workflows run them."""
 
 import argparse
 import asyncio
 import io
 import json
 import logging
+import os
 import sys
 import tempfile
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from panache_archive import ads, check, era5, plan, supervise
+from panache_archive import ads, check, era5, mirror, plan, supervise
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
 from panache_archive.variables import Reanalysis, Variable
 
@@ -104,6 +105,24 @@ async def _era5_build_with_bucket(job: era5.Era5Job, out: Path) -> Path:
         return await era5.build(job, out, bucket)
 
 
+def _mirror(args: argparse.Namespace) -> int:
+    token = os.environ.get("HF_TOKEN", "")
+    if not token:
+        print("HF_TOKEN is not set: Hugging Face would refuse the commits", file=sys.stderr)
+        return 2
+    release = mirror.load_release(Path(args.release))
+    card = Path(args.card).read_bytes()
+    with tempfile.TemporaryDirectory(dir=args.workdir) as workdir:
+        done = mirror.sync(
+            mirror.HubApi(token), release, card, Path(workdir), mirror.download_asset
+        )
+    print(
+        f"{len(release)} assets in the release: {len(done.upload)} uploaded, "
+        f"{len(done.delete)} deleted, the card {'written' if done.card else 'unchanged'}"
+    )
+    return 0
+
+
 def _months(text: str) -> tuple[int, ...]:
     """`all`, a month such as `2`, or a span such as `2-5`."""
     return ALL_MONTHS if text.strip() == "all" else plan.parse_span(text)
@@ -155,6 +174,14 @@ def _parser() -> argparse.ArgumentParser:
     era5_building.add_argument("--months", default="all", help="`all`, a month, or a span: 2-5")
     era5_building.add_argument("--out", default="dist", help="where the asset is written")
     era5_building.set_defaults(run=_era5_build)
+
+    mirroring = commands.add_parser(
+        "mirror", help="mirror the whole domain's release on Hugging Face"
+    )
+    mirroring.add_argument("--release", required=True, help="the release's JSON, from GitHub's API")
+    mirroring.add_argument("--card", required=True, help="the dataset card to keep on the mirror")
+    mirroring.add_argument("--workdir", help="where each batch of assets is downloaded")
+    mirroring.set_defaults(run=_mirror)
     return parser
 
 

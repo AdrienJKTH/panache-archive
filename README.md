@@ -50,6 +50,16 @@ The [`Supervise`](.github/workflows/supervise.yml) workflow pilots the runs: aft
 
 Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps its last snapshot in the issue's body.
 
+### The Hugging Face mirror
+
+The whole domain's release `cams-europe-v1` is mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (folder `cams-europe-v1`), which Panache reads when GitHub fails (its decision D66). After each CAMS run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
+
+- uploads every asset the mirror lacks, or holds with another size or SHA-256 (in batches of at most 4 GB, one commit each, each file checked against the release's digest);
+- deletes the files the release no longer holds (an interim year replaced by its validated twin);
+- keeps the dataset card, [`docs/hugging-face-card.md`](docs/hugging-face-card.md), which describes the format and how to read one cell.
+
+It writes with the repository secret `HF_TOKEN` (a token of the dataset's owner, with write access).
+
 ## ERA5 daily weather
 
 The release [`era5-v1`](../../releases/tag/era5-v1) holds one asset per year, such as `era5-2021.parquet`: France's daily weather from ERA5 (0.25°, 43 by 63 grid points, the same box), with the nine daily variables of Panache's weather model:
