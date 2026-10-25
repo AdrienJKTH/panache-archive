@@ -25,6 +25,15 @@ GRID_LONS = np.array([354.45, 354.55, 4.85, 9.95, 10.05])
 """In [0, 360), as some files write them: -5.55 and 10.05 lie outside the box."""
 FILE_NAMES = {ADS_NAME[variable]: variable.value for variable in Variable}
 """Names of the variables inside the files, by ADS name: `pm10` for `particulate_matter_10um`."""
+REGULAR_LATS = np.round(40.75 + 0.1 * np.arange(8), 2)
+"""A regular piece of the grid, 40.75 to 41.45° N: France's box keeps the five from 41.05."""
+REGULAR_LONS = np.round(-0.35 + 0.1 * np.arange(14), 2)
+"""-0.35 to 0.95° E: two frames a row, the second one of 6 cells."""
+
+
+def on_regular_grid(_month: int, options: dict[str, Any]) -> None:
+    """A `FakeAds.alter` that writes every month on the regular grid."""
+    options["lats"], options["lons"] = REGULAR_LATS, REGULAR_LONS
 
 
 def synthetic(first_hour: datetime, hours: int, lats: FloatArray, lons: FloatArray) -> FloatArray:
@@ -121,8 +130,17 @@ def open_meteo_answer(
 class FakeOpenMeteo:
     """Serves the synthetic hours of the nearest cell, rounded as Open-Meteo rounds them."""
 
-    def __init__(self, variable: Variable, offset: float = 0.0, decimals: int = 1) -> None:
+    def __init__(
+        self,
+        variable: Variable,
+        offset: float = 0.0,
+        decimals: int = 1,
+        *,
+        lats: FloatArray = GRID_LATS,
+        lons: FloatArray = GRID_LONS,
+    ) -> None:
         self.variable, self.offset, self.decimals = variable, offset, decimals
+        self.lats, self.lons = lats, lons
         self.queries: list[dict[str, str]] = []
 
     def __call__(self, url: str) -> bytes:
@@ -131,7 +149,7 @@ class FakeOpenMeteo:
         first = datetime.fromisoformat(query["start_date"]).replace(tzinfo=UTC)
         last = date.fromisoformat(query["end_date"])
         hours = ((last - first.date()).days + 1) * 24
-        lat = nearest(GRID_LATS, float(query["latitude"]))
-        lon = nearest(normalise_longitudes(GRID_LONS), float(query["longitude"]))
-        values = synthetic(first, hours, GRID_LATS, GRID_LONS)[:, lat, lon]
+        lat = nearest(self.lats, float(query["latitude"]))
+        lon = nearest(normalise_longitudes(self.lons), float(query["longitude"]))
+        values = synthetic(first, hours, self.lats, self.lons)[:, lat, lon]
         return open_meteo_answer(self.variable, first, values + self.offset, self.decimals)

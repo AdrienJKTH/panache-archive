@@ -1,4 +1,4 @@
-"""The France box of the archive, and where it lies in the CAMS Europe grid.
+"""The archive's boxes, France and the whole domain, and where they lie in the CAMS Europe grid.
 
 The grid is regular at 0.1°. Its centres are on x.x5° since 2020 (Lyon's cell is centred on
 45.75° N, 4.85° E), and were on x.x0° until 2019 (45.8° N, 4.8° E): each file is cut on its own
@@ -36,6 +36,9 @@ class Box:
 
 FRANCE: Final = Box(south=41.0, north=51.5, west=-5.5, east=10.0)
 """Mainland France and Corsica with a margin, sea included: 105 by 155 cells."""
+EUROPE: Final = Box(south=29.9, north=72.1, west=-25.1, east=45.1)
+"""The whole CAMS Europe grid, 30-72° N and 25° W-45° E, edge cells of both grids included:
+420 by 700 cells since 2020."""
 
 
 @dataclass(frozen=True, slots=True)

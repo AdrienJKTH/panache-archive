@@ -3,13 +3,14 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from helpers import FakeAds, FakeOpenMeteo
+from helpers import REGULAR_LATS, REGULAR_LONS, FakeAds, FakeOpenMeteo, on_regular_grid
 from panache_archive import cli, era5
 from panache_archive.build import Job, to_table
-from panache_archive.check import PLACES
+from panache_archive.check import EUROPE_PLACES, PLACES
 from panache_archive.variables import Reanalysis, Variable
 
 
@@ -36,6 +37,7 @@ def test_plan_prints_the_missing_assets(
             "variable": "pm10",
             "year": 2024,
             "stream": "validated_reanalysis",
+            "domain": "france",
         }
     ]
 
@@ -181,3 +183,61 @@ def test_check_compares_an_era5_asset_with_the_archive_api(
 
     assert cli.main(["check", str(asset)]) == 0
     assert compared == [asset]
+
+
+def test_plan_and_build_the_whole_domain(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ads: FakeAds,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def complete_years(variable: Variable, stream: Reanalysis) -> frozenset[int]:
+        offered = variable is Variable.PM10 and stream is Reanalysis.VALIDATED
+        return frozenset({2021}) if offered else frozenset()
+
+    monkeypatch.setattr("panache_archive.ads.complete_years", complete_years)
+    monkeypatch.setattr("panache_archive.ads.download", fake_ads)
+    fake_ads.alter = on_regular_grid
+
+    cli.main(["plan", "--variables", "pm10", "--domain", "europe"])
+    planned = json.loads(capsys.readouterr().out)
+    asked = ["build", "--variable", "pm10", "--year", "2021", "--months", "2"]
+    code = cli.main([*asked, "--domain", "europe", "--out", str(tmp_path / "dist")])
+
+    assert planned[0]["asset"] == "cams-pm10-2021-validated.cells"
+    assert planned[0]["domain"] == "europe"
+    assert code == 0
+    assert capsys.readouterr().out.strip().endswith("cams-pm10-2021-02-validated.cells")
+
+
+@pytest.mark.parametrize(("altered", "expected"), [(False, 0), (True, 1)])
+def test_check_compares_the_whole_domain_with_its_france_twin(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_ads: FakeAds,
+    tmp_path: Path,
+    altered: bool,
+    expected: int,
+) -> None:
+    monkeypatch.setattr("panache_archive.ads.download", fake_ads)
+    fake_ads.alter = on_regular_grid
+    base = ["build", "--variable", "pm10", "--year", "2021", "--months", "2"]
+    cli.main([*base, "--domain", "europe", "--out", str(tmp_path / "dist")])
+    cli.main([*base, "--out", str(tmp_path / "twins")])
+    twin = tmp_path / "twins" / "cams-pm10-2021-02-validated.parquet"
+    if altered:
+        table = pq.read_table(twin)
+        mean = table["mean"].to_numpy(zero_copy_only=False) + 0.01
+        pq.write_table(table.set_column(3, "mean", pa.array(mean)), twin)
+    open_meteo = FakeOpenMeteo(Variable.PM10, lats=REGULAR_LATS, lons=REGULAR_LONS)
+    monkeypatch.setattr("panache_archive.check.http_get", open_meteo)
+    summary = tmp_path / "summary.md"
+
+    asset = tmp_path / "dist" / "cams-pm10-2021-02-validated.cells"
+    code = cli.main(
+        ["check", str(asset), "--twins", str(tmp_path / "twins"), "--summary", str(summary)]
+    )
+
+    assert code == expected
+    report = summary.read_text(encoding="utf-8")
+    assert report.count("| mean |") == len(EUROPE_PLACES)
+    assert "against France's `cams-pm10-2021-02-validated.parquet`: 70 cells by 28 days" in report

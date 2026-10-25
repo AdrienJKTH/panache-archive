@@ -9,6 +9,7 @@ import json
 from collections.abc import Callable, Collection, Iterable
 
 from panache_archive.build import Job
+from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Variable
 
 Years = Callable[[Variable, Reanalysis], frozenset[int]]
@@ -16,9 +17,13 @@ Years = Callable[[Variable, Reanalysis], frozenset[int]]
 
 
 def wanted(
-    variables: Iterable[Variable], years: Collection[int] | None, offered: Years
+    variables: Iterable[Variable],
+    years: Collection[int] | None,
+    offered: Years,
+    domain: Domain = Domain.FRANCE,
 ) -> list[Job]:
-    """Every whole-year job of `variables` in `years` (all years if `None`) that the ADS offers."""
+    """Every whole-year job of `variables` in `years` (all years if `None`) that the ADS offers,
+    over `domain`."""
     jobs: list[Job] = []
     for variable in variables:
         validated = offered(variable, Reanalysis.VALIDATED)
@@ -27,7 +32,7 @@ def wanted(
             if years is not None and year not in years:
                 continue
             stream = Reanalysis.VALIDATED if year in validated else Reanalysis.INTERIM
-            jobs.append(Job(variable=variable, year=year, stream=stream))
+            jobs.append(Job(variable=variable, year=year, stream=stream, domain=domain))
     return jobs
 
 
@@ -45,6 +50,7 @@ def matrix(jobs: Iterable[Job]) -> str:
                 "variable": j.variable.value,
                 "year": j.year,
                 "stream": j.stream.value,
+                "domain": j.domain.value,
             }
             for j in jobs
         ]

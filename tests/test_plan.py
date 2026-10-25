@@ -54,6 +54,7 @@ def test_the_matrix_lists_each_job() -> None:
             "variable": "ozone",
             "year": 2021,
             "stream": "validated_reanalysis",
+            "domain": "france",
         }
     ]
     assert plan.matrix([]) == "[]"

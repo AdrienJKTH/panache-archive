@@ -1,14 +1,17 @@
-"""Build one asset of the archive: a variable's daily statistics over France, month by month.
+"""Build one asset of the archive: a variable's daily statistics over a domain, month by month.
 
-Each month is downloaded whole from the ADS (the European grid), cut to the box, summed up into
-days, and deleted before the next. The asset is a Parquet table, one row per cell and day,
-sorted by latitude, longitude and day, so that a place's days lie together.
+Each month is downloaded whole from the ADS (the European grid), cut to the domain's box, summed
+up into days band of latitudes by band, and deleted before the next.
+- France's asset is a Parquet table, one row per cell and day, sorted by latitude, longitude and
+  day, so that a place's days lie together.
+- The whole domain's is a `.cells` file of cell-major frames (`cells`), read one cell at a time.
 """
 
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -18,10 +21,11 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from panache_archive import ads
+from panache_archive import ads, cells
 from panache_archive.daily import EVENING_HOURS, daily_max_8h_means, daily_means
-from panache_archive.grid import FRANCE, Box, FloatArray
-from panache_archive.netcdf import HourlyField, read_field
+from panache_archive.domain import Domain
+from panache_archive.grid import Box, FloatArray
+from panache_archive.netcdf import HourlyField, read_bands
 from panache_archive.variables import (
     ADS_NAME,
     UNIT,
@@ -32,6 +36,9 @@ from panache_archive.variables import (
 )
 
 ALL_MONTHS: Final = tuple(range(1, 13))
+BAND_ROWS: Final = 105
+"""Latitudes summed up at a time: France's box in one band, the whole domain in four. A band of
+the whole grid's month takes ~0.4 GB in float64, its 8-hour means a few times that."""
 VALUE_DECIMALS: Final = 2
 """Daily values are rounded to 0.01 μg/m³: far below CAMS's own uncertainty, and the files
 shrink by half or more (the decimals of a float32 barely compress)."""
@@ -48,21 +55,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class Job:
-    """One asset: a variable over consecutive months of a year, from one reanalysis stream."""
+    """One asset: a variable over consecutive months of a year, from one reanalysis stream, over
+    a domain."""
 
     variable: Variable
     year: int
     stream: Reanalysis
     months: tuple[int, ...] = ALL_MONTHS
+    domain: Domain = Domain.FRANCE
 
     def __post_init__(self) -> None:
         check_months(self.months)
 
     @property
     def asset_name(self) -> str:
-        """Such as `cams-pm10-2021-validated.parquet`, or `cams-pm10-2021-02-validated.parquet`
-        for February alone."""
-        return f"cams-{self.variable}-{self.year}{span(self.months)}-{self.stream.label}.parquet"
+        """Such as `cams-pm10-2021-validated.parquet`, `cams-pm10-2021-02-validated.parquet` for
+        February alone, or `cams-pm10-2021-validated.cells` over the whole domain."""
+        months = span(self.months)
+        return f"cams-{self.variable}-{self.year}{months}-{self.stream.label}{self.domain.suffix}"
 
 
 def check_months(months: tuple[int, ...]) -> None:
@@ -88,39 +98,55 @@ def build(
     out_dir: Path,
     workdir: Path,
     *,
-    box: Box = FRANCE,
+    box: Box | None = None,
     download: ads.Download = ads.download,
+    band_rows: int = BAND_ROWS,
 ) -> Path:
-    """Build `job`'s asset in `out_dir`, downloading into `workdir`; returns its path."""
+    """Build `job`'s asset in `out_dir`, downloading into `workdir`; returns its path.
+
+    `box` is the job's domain's unless given."""
+    box = job.domain.box if box is None else box
     out_dir.mkdir(parents=True, exist_ok=True)
     workdir.mkdir(parents=True, exist_ok=True)
-    columns: dict[Statistic, list[FloatArray]] = {s: [] for s in statistics(job.variable)}
-    first: HourlyField | None = None
-    evening: FloatArray | None = None
+    wanted = statistics(job.variable)
+    columns: dict[Statistic, list[FloatArray]] = {s: [] for s in wanted}
+    grid: list[tuple[FloatArray, FloatArray]] = []  # each band's axes, as the first month has them
+    evenings: dict[int, FloatArray] = {}  # each band's last hours, for the next month's 8-h means
     for month in job.months:
-        field = _month(job, month, box, download, workdir)
-        if first is None:
-            first = field
-        elif not (
-            np.array_equal(field.lats, first.lats) and np.array_equal(field.lons, first.lons)
-        ):
-            raise ValueError(f"the grid of {job.year}-{month:02d} differs from the first month's")
-        columns[Statistic.MEAN].append(daily_means(field.values))
-        if Statistic.MAX_8H_MEAN in columns:
-            columns[Statistic.MAX_8H_MEAN].append(daily_max_8h_means(field.values, evening))
-            evening = field.values[-EVENING_HOURS:]
-    assert first is not None  # `Job` has at least one month
+        days: dict[Statistic, list[FloatArray]] = {s: [] for s in wanted}
+        with closing(_month_bands(job, month, box, download, workdir, band_rows)) as bands:
+            for index, field in enumerate(bands):
+                if index == len(grid):
+                    grid.append((field.lats, field.lons))
+                elif not (
+                    np.array_equal(field.lats, grid[index][0])
+                    and np.array_equal(field.lons, grid[index][1])
+                ):
+                    raise ValueError(
+                        f"the grid of {job.year}-{month:02d} differs from the first month's"
+                    )
+                days[Statistic.MEAN].append(daily_means(field.values))
+                if Statistic.MAX_8H_MEAN in days:
+                    evening = evenings.get(index)
+                    days[Statistic.MAX_8H_MEAN].append(daily_max_8h_means(field.values, evening))
+                    evenings[index] = field.values[-EVENING_HOURS:]
+        for statistic, by_band in days.items():
+            columns[statistic].append(np.concatenate(by_band, axis=1))
 
-    table = to_table(
-        first.lats,
-        first.lons,
-        date(job.year, job.months[0], 1),
-        {statistic.value: np.concatenate(days) for statistic, days in columns.items()},
-        metadata=_metadata(job, box),
-    )
+    lats = np.concatenate([band_lats for band_lats, _ in grid])
+    lons = grid[0][1]
+    first_day = date(job.year, job.months[0], 1)
+    whole = [np.concatenate(columns.pop(statistic)) for statistic in wanted]  # frees each month
+    metadata = _metadata(job, box)
     path = out_dir / job.asset_name
-    pq.write_table(table, path, compression="zstd")
-    logger.info("%s: %d rows, %.1f MB", path.name, table.num_rows, path.stat().st_size / 1e6)
+    if job.domain is Domain.FRANCE:
+        named = {statistic.value: values for statistic, values in zip(wanted, whole, strict=True)}
+        table = to_table(lats, lons, first_day, named, metadata=metadata)
+        pq.write_table(table, path, compression="zstd")
+    else:
+        cells.write(path, lats, lons, first_day, whole, metadata=metadata)
+    megabytes = path.stat().st_size / 1e6
+    logger.info("%s: %d by %d cells, %.1f MB", path.name, lats.size, lons.size, megabytes)
     return path
 
 
@@ -155,6 +181,8 @@ def to_table(
 
 def read_metadata(path: Path) -> dict[str, Any]:
     """What an asset says about itself (`_metadata`)."""
+    if path.suffix == Domain.EUROPE.suffix:
+        return cells.read_metadata(path)
     stored = pq.read_schema(path).metadata or {}
     if METADATA_KEY not in stored:
         raise ValueError(f"{path.name} is not an asset of this archive")
@@ -162,8 +190,10 @@ def read_metadata(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _month(job: Job, month: int, box: Box, download: ads.Download, workdir: Path) -> HourlyField:
-    """One month's hourly field over the box; its files are deleted once read."""
+def _month_bands(
+    job: Job, month: int, box: Box, download: ads.Download, workdir: Path, band_rows: int
+) -> Generator[HourlyField]:
+    """One month's hourly field over the box, band by band; its files are deleted once read."""
     started = time.monotonic()
     target = workdir / f"{job.variable}-{job.year}-{month:02d}.download"
     download(ads.request(job.variable, job.year, month, job.stream), target)
@@ -172,11 +202,12 @@ def _month(job: Job, month: int, box: Box, download: ads.Download, workdir: Path
     try:
         if len(files) != 1:
             raise ValueError(f"expected one netCDF file for {job.year}-{month:02d}: {files}")
-        field = read_field(files[0], box)
+        for field in read_bands(files[0], box, band_rows):
+            _check_month(field, job.year, month)
+            yield field
     finally:
         for path in files:
             path.unlink(missing_ok=True)
-    _check_month(field, job.year, month)
     logger.info(
         "%s %d-%02d: %.0f MB downloaded and read in %.0f s",
         job.variable,
@@ -185,7 +216,6 @@ def _month(job: Job, month: int, box: Box, download: ads.Download, workdir: Path
         size / 1e6,
         time.monotonic() - started,
     )
-    return field
 
 
 def _check_month(field: HourlyField, year: int, month: int) -> None:
@@ -209,6 +239,7 @@ def _metadata(job: Job, box: Box) -> dict[str, Any]:
         "statistics": [s.value for s in statistics(job.variable)],
         "days": "UTC",
         "decimals": VALUE_DECIMALS,
+        "domain": job.domain.value,
         "box": asdict(box),
         "dataset": ads.DATASET,
         "doi": ads.DOI,

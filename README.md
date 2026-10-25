@@ -1,8 +1,8 @@
 # Panache archive
 
-Daily air quality and weather over France since 2013, from the CAMS European air quality reanalyses and ERA5, for **Panache**, the pollution episode detective.
+Daily air quality and weather since 2013, from the CAMS European air quality reanalyses and ERA5, for **Panache**, the pollution episode detective: over France, and air quality over the whole CAMS Europe domain.
 
-Panache explains pollution episodes at a place: was a day unusual, and why? It reads each place's history from Open-Meteo, whose free tier allows only a few new places a day. This archive holds the same history for every cell of France at once, so that the history costs no call, and France can be drawn as a map.
+Panache explains pollution episodes at a place: was a day unusual, and why? It reads each place's history from Open-Meteo, whose free tier allows only a few new places a day, and which serves the reanalysis until 2021 only. This archive holds the reanalysis for every cell at once, so that a history costs no call: France's, which can be drawn as a map, and the whole domain's, read one cell at a time from afar.
 
 ## What it holds
 
@@ -23,30 +23,47 @@ One asset per variable and year in the release [`cams-v1`](../../releases/tag/ca
 - **Values** are rounded to 0.01 μg/m³: far below the reanalysis's own uncertainty, and the files shrink by half or more.
 - Each asset's Parquet metadata (key `panache_archive`) repeats its variable, stream, box, rules, licence and attribution.
 
+## The whole domain
+
+One asset per variable and year in the release [`cams-europe-v1`](../../releases/tag/cams-europe-v1), such as `cams-pm10-2021-validated.cells`: the same daily values as France's assets (the same downloads, rules and rounding; each build checks it holds France's numbers exactly), over the whole CAMS Europe grid, 30 to 72° N and 25° W to 45° E: 420 by 700 cells since 2020, about 150 MB a variable-year.
+
+Such a file is too large to read whole for one place, so it is laid out to give one cell's year in two small requests (Panache's decision D66), little-endian throughout:
+
+| Part | Bytes | |
+|---|---|---|
+| Header | 64 | `PANCELLS`, version (1), statistics, cells per frame (8), then the grid: centre of the south-west cell, step (0.1°), rows and columns; the first day (days since 1970-01-01), the days, the scale (100) and the length of the metadata |
+| Offset table | 8 per frame, plus 8 | Where each frame starts, and where the last one ends. A frame holds 8 cells of a latitude row: the frame of row `r` and column `c` is `r × ceil(columns / 8) + c // 8`, so its two offsets lie at byte `64 + 8 × frame` |
+| Frames | ~4 KB each | 16 bytes saying which cells follow (row, first column, cells, days), then zstd over the int32 values in hundredths of μg/m³ (−2³¹ where missing), shaped (statistic, cell, day) and byte-stream split (the first byte of every value, then the second, …) |
+| Metadata | | JSON: variable, unit, statistics, stream, box, licence, attribution |
+
+- **Statistics**: the daily mean, and for ozone the daily mean then the highest 8-hour mean, in one file.
+- **Reading one cell** (`panache_archive.cells.read_cell`, or from afar with HTTP ranges): read the 16 bytes of its frame's offsets, then the frame; check its 16 first bytes; decompress; un-split; pick the cell.
+- **The two grids** are kept as for France: each file holds its year's own grid, given by its header.
+
 ## How it is built
 
 The ADS cannot cut its reanalysis to an area: every request returns the whole European grid, 0.8 GB per variable and month, about 1 TB for the archive. So the [`CAMS`](.github/workflows/cams.yml) workflow runs on GitHub's machines:
 
 1. **Plan**: asks the ADS which years each variable offers whole, and lists those the release lacks.
-2. **Build**, one job per variable-year: downloads each month, keeps the box, sums up its days, deletes the month, then publishes the asset.
-3. **Check**: compares each asset with what Open-Meteo serves at Paris, Lyon, Grenoble and Bordeaux. Both come from the same reanalysis, so their daily values must agree but for rounding: Open-Meteo rounds its hours to 0.1 μg/m³, or to whole μg/m³ for some variables such as ozone, so a day may differ by half that step (plus 0.005 for the archive's own rounding).
+2. **Build**, one job per variable-year: downloads each month, keeps the domain's box, sums up its days band of latitudes by band (a whole month of the grid would take 1.75 GB per array), deletes the month, then publishes the asset.
+3. **Check**: compares each asset with what Open-Meteo serves at Paris, Lyon, Grenoble and Bordeaux (Lyon, Madrid, Warsaw, Athens and Helsinki for the whole domain). Both come from the same reanalysis until 2021, so their daily values must agree but for rounding: Open-Meteo rounds its hours to 0.1 μg/m³, or to whole μg/m³ for some variables such as ozone, so a day may differ by half that step (plus 0.005 for the archive's own rounding). A whole-domain asset must also hold its France twin's numbers exactly, every year.
 
 Run it from the Actions tab, or:
 
 ```bash
-gh workflow run cams.yml -f variables=all -f years=all
+gh workflow run cams.yml -f domain=europe -f variables=all -f years=all
 ```
 
-Labelling a pull request `pilot` tries its code on February 2021 (PM10 and ozone) and attaches the assets to the run.
+Labelling a pull request `pilot` tries its code on February 2021 (PM10 and ozone, over France and the whole domain) and February 2019 (the old grid), with each build's time and peak memory, and attaches the assets to the run.
 
 ### The supervisor
 
-The [`Supervise`](.github/workflows/supervise.yml) workflow pilots the runs: after each build job, whenever a CAMS run ends, and every 15 minutes (GitHub's cron is late at times), it
+The [`Supervise`](.github/workflows/supervise.yml) workflow pilots the runs of each domain: after each build job, whenever a CAMS run ends, and every 15 minutes (GitHub's cron is late at times), it
 
 - launches a CAMS run when assets are missing and none is on (a run builds only what the release lacks, so failures are retried);
 - leaves out an asset that failed 3 times, until someone looks (the CAMS input `skip`);
 - deletes an interim asset once its validated twin is built;
-- reports progress in the issue **Archive progress**: every asset in a grid, the pace and the time left, and a comment on each event (a run ended, an asset stuck, a check that disagrees, the archive complete), which GitHub notifies.
+- reports progress in the domain's issue, **Archive progress** and **Archive progress, whole domain**: every asset in a grid, the pace and the time left, and a comment on each event (a run ended, an asset stuck, a check that disagrees, the archive complete), which GitHub notifies.
 
 Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps its last snapshot in the issue's body.
 

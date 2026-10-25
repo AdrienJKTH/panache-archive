@@ -14,6 +14,7 @@ from pathlib import Path
 
 from panache_archive import ads, check, era5, plan, supervise
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
+from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Variable
 
 
@@ -35,6 +36,7 @@ def _plan(args: argparse.Namespace) -> int:
         plan.parse_variables(args.variables),
         plan.parse_years(args.years),
         ads.complete_years,
+        Domain(args.domain),
     )
     print(plan.matrix(plan.missing(jobs, built | skipped)))
     return 0
@@ -46,6 +48,7 @@ def _build(args: argparse.Namespace) -> int:
         year=args.year,
         stream=Reanalysis(args.stream),
         months=_months(args.months),
+        domain=Domain(args.domain),
     )
     with tempfile.TemporaryDirectory(dir=args.workdir) as workdir:
         path = build(job, Path(args.out), Path(workdir), download=ads.download)
@@ -62,11 +65,16 @@ def _check(args: argparse.Namespace) -> int:
         else:
             comparisons = check.compare(path, get=check.http_get)
         report = check.render(path.name, comparisons)
+        agree = agree and all(c.agrees for c in comparisons)
+        twin = Path(args.twins or ".") / path.with_suffix(Domain.FRANCE.suffix).name
+        if args.twins and path.suffix == Domain.EUROPE.suffix and twin.exists():
+            against = check.compare_twin(path, twin)
+            report += "\n" + check.render_twin(path.name, against)
+            agree = agree and against.agrees
         print(report)
         if args.summary:
             with Path(args.summary).open("a", encoding="utf-8") as summary:
                 summary.write(report + "\n")
-        agree = agree and all(c.agrees for c in comparisons)
     return 0 if agree else 1
 
 
@@ -77,6 +85,7 @@ def _supervise(args: argparse.Namespace) -> int:
         at=datetime.now(UTC),
         supervisor_url=args.url,
         offered=ads.complete_years,
+        domain=Domain(args.domain),
     )
     print(decision)
     return 0
@@ -112,15 +121,17 @@ def _months(text: str) -> tuple[int, ...]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="panache-archive",
-        description="Daily air quality over France from the CAMS European reanalyses.",
+        description="Daily air quality over Europe from the CAMS European reanalyses.",
     )
     commands = parser.add_subparsers(required=True)
+    domains = [d.value for d in Domain]
 
     planning = commands.add_parser("plan", help="print the matrix of the assets still missing")
     planning.add_argument("--variables", default="all", help="`all`, or names such as pm10,ozone")
     planning.add_argument("--years", default="all", help="`all`, a year, or a span: 2013-2025")
     planning.add_argument("--built", help="a file listing the assets already built")
     planning.add_argument("--skip", default="", help="assets to leave out, separated by commas")
+    planning.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
     planning.set_defaults(run=_plan)
 
     building = commands.add_parser("build", help="build one asset from the ADS")
@@ -130,6 +141,7 @@ def _parser() -> argparse.ArgumentParser:
         "--stream", default=Reanalysis.VALIDATED.value, choices=[s.value for s in Reanalysis]
     )
     building.add_argument("--months", default="all", help="`all`, a month, or a span: 2-5")
+    building.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
     building.add_argument("--out", default="dist", help="where the asset is written")
     building.add_argument("--workdir", help="where downloads go (one month at a time)")
     building.set_defaults(run=_build)
@@ -137,12 +149,16 @@ def _parser() -> argparse.ArgumentParser:
     checking = commands.add_parser("check", help="compare assets with Open-Meteo")
     checking.add_argument("assets", nargs="+")
     checking.add_argument("--summary", help="a Markdown file to append the reports to")
+    checking.add_argument(
+        "--twins", help="a folder of France's assets, to compare the whole domain's with"
+    )
     checking.set_defaults(run=_check)
 
     supervising = commands.add_parser("supervise", help="decide the next step, write the report")
     supervising.add_argument("--state", required=True, help="what the workflow gathered")
     supervising.add_argument("--out", required=True, help="where the decision is written")
     supervising.add_argument("--url", default="", help="this supervisor run's page")
+    supervising.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
     supervising.set_defaults(run=_supervise)
 
     era5_planning = commands.add_parser("era5-plan", help="print the ERA5 years still missing")

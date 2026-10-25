@@ -2,19 +2,32 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from helpers import FakeAds, FakeOpenMeteo, open_meteo_answer
+from helpers import (
+    REGULAR_LATS,
+    REGULAR_LONS,
+    FakeAds,
+    FakeOpenMeteo,
+    on_regular_grid,
+    open_meteo_answer,
+)
 from panache_archive.build import Job, build
 from panache_archive.check import (
+    EUROPE_PLACES,
     PLACES,
     Place,
     compare,
+    compare_twin,
     open_meteo_hourly,
     render,
+    render_twin,
     rounding_step,
     tolerance,
 )
+from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Variable
 
 FEBRUARY = datetime(2021, 2, 1, tzinfo=UTC)
@@ -121,3 +134,69 @@ def test_the_rounding_step_is_read_from_the_values(values: list[float], step: fl
 def test_the_tolerance_is_half_a_step_plus_the_archive_rounding() -> None:
     assert tolerance(0.1) == pytest.approx(0.055)
     assert tolerance(1.0) == pytest.approx(0.505)
+
+
+@pytest.fixture
+def europe(fake_ads: FakeAds, tmp_path: Path) -> tuple[Path, Path]:
+    """The same February of ozone over the whole domain and over France, on a regular grid."""
+    fake_ads.alter = on_regular_grid
+    out, work = tmp_path / "dist", tmp_path / "work"
+    whole = Job(Variable.OZONE, 2021, Reanalysis.VALIDATED, (2,), Domain.EUROPE)
+    france = Job(Variable.OZONE, 2021, Reanalysis.VALIDATED, (2,))
+    return build(whole, out, work, download=fake_ads), build(france, out, work, download=fake_ads)
+
+
+def test_a_whole_domain_asset_agrees_with_open_meteo(europe: tuple[Path, Path]) -> None:
+    open_meteo = FakeOpenMeteo(Variable.OZONE, lats=REGULAR_LATS, lons=REGULAR_LONS)
+    place = Place("Somewhere", 40.83, 0.62)
+
+    comparisons = compare(europe[0], [place], get=open_meteo)
+
+    assert [c.column for c in comparisons] == ["mean", "max_8h_mean"]
+    assert all(c.cell == (40.85, 0.65) and c.days == 28 and c.agrees for c in comparisons)
+
+
+def test_a_whole_domain_asset_is_compared_at_european_places(
+    europe: tuple[Path, Path],
+) -> None:
+    open_meteo = FakeOpenMeteo(Variable.OZONE, lats=REGULAR_LATS, lons=REGULAR_LONS)
+
+    compare(europe[0], get=open_meteo)
+
+    assert [(q["latitude"], q["longitude"]) for q in open_meteo.queries] == [
+        (str(p.lat), str(p.lon)) for p in EUROPE_PLACES
+    ]
+
+
+def test_the_whole_domain_matches_its_france_twin(europe: tuple[Path, Path]) -> None:
+    twin = compare_twin(*europe)
+
+    assert (twin.cells, twin.days, twin.differing, twin.max_difference) == (5 * 14, 28, 0, 0.0)
+    assert twin.agrees
+    assert render_twin(europe[0].name, twin).endswith("0 values differ (largest by 0.00) ✓\n")
+
+
+def test_a_twin_that_differs_is_reported(europe: tuple[Path, Path], tmp_path: Path) -> None:
+    table = pq.read_table(europe[1])
+    mean = table["mean"].to_numpy(zero_copy_only=False).copy()
+    mean[3] += 0.01
+    mean[4] = np.nan
+    altered = tmp_path / "altered.parquet"
+    pq.write_table(table.set_column(3, "mean", pa.array(mean, mask=np.isnan(mean))), altered)
+
+    twin = compare_twin(europe[0], altered)
+
+    assert twin.differing == 2
+    assert twin.max_difference == pytest.approx(0.01, abs=1e-5)
+    assert not twin.agrees
+    assert "✗" in render_twin(europe[0].name, twin)
+
+
+def test_a_twin_off_the_grid_is_an_error(europe: tuple[Path, Path], tmp_path: Path) -> None:
+    table = pq.read_table(europe[1])
+    lats = table["lat"].to_numpy() + 0.05
+    moved = tmp_path / "moved.parquet"
+    pq.write_table(table.set_column(0, "lat", pa.array(lats)), moved)
+
+    with pytest.raises(ValueError, match="not a block"):
+        compare_twin(europe[0], moved)
