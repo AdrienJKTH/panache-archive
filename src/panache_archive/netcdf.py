@@ -2,12 +2,14 @@
 
 An ADS file holds one variable over one month, `(time, lat, lon)` on the whole European grid,
 such as `cams.eaq.vra.ENSa.pm10.l0.2021-02.nc` (807 MB as float32). Only the box's latitude
-band is read from disk.
+band is read from disk, and a large box is read in bands of a few latitudes: the whole grid's
+month, in float64, would take 1.75 GB per array.
 """
 
 from __future__ import annotations  # netCDF4.Variable is generic in its stubs only
 
 import itertools
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,6 +46,13 @@ class HourlyField:
 
 def read_field(path: Path, box: Box) -> HourlyField:
     """The hourly field of the file's one data variable over `box`."""
+    (field,) = read_bands(path, box)
+    return field
+
+
+def read_bands(path: Path, box: Box, max_rows: int | None = None) -> Iterator[HourlyField]:
+    """The hourly field over `box`, south first, in bands of at most `max_rows` latitudes (all
+    of them if `None`): one band is in memory at a time."""
     with netCDF4.Dataset(path) as dataset:
         name = _data_variable(dataset)
         variable = dataset.variables[name]
@@ -53,16 +62,26 @@ def read_field(path: Path, box: Box) -> HourlyField:
             box,
         )
         first_hour = _first_hour(dataset.variables["time"])
-        values = _read_box(variable, cells)
         units = str(getattr(variable, "units", ""))
-    return HourlyField(
-        name=name,
-        units=units,
-        first_hour=first_hour,
-        values=values,
-        lats=cells.lats,
-        lons=cells.lons,
-    )
+        rows = cells.lat_index.size
+        step = rows if max_rows is None else max_rows
+        if step < 1:
+            raise ValueError(f"bands of {max_rows} rows hold nothing")
+        for start in range(0, rows, step):
+            band = BoxCells(
+                lat_index=cells.lat_index[start : start + step],
+                lon_index=cells.lon_index,
+                lats=cells.lats[start : start + step],
+                lons=cells.lons,
+            )
+            yield HourlyField(
+                name=name,
+                units=units,
+                first_hour=first_hour,
+                values=_read_box(variable, band),
+                lats=band.lats,
+                lons=band.lons,
+            )
 
 
 def _data_variable(dataset: netCDF4.Dataset) -> str:

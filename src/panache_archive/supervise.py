@@ -26,6 +26,7 @@ from typing import Any, Final
 
 from panache_archive import plan
 from panache_archive.build import Job
+from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Variable
 
 MAX_FAILURES: Final = 3
@@ -78,6 +79,10 @@ SHORT: Final[Mapping[Status, str]] = {
 }
 """How the summary line counts the assets not built yet."""
 LEFT: Final = frozenset({Status.BUILDING, Status.QUEUED, Status.RETRY, Status.MISSING})
+TITLES: Final[Mapping[Domain, str]] = {
+    Domain.FRANCE: "CAMS archive",
+    Domain.EUROPE: "CAMS archive over the whole domain",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +144,7 @@ class Snapshot:
         )
 
     @classmethod
-    def from_body(cls, body: str | None) -> "Snapshot":
+    def from_body(cls, body: str | None, domain: Domain = Domain.FRANCE) -> "Snapshot":
         """The snapshot kept in an issue's body; an empty one if there is none."""
         found = STATE_PATTERN.search(body or "")
         if found is None:
@@ -151,7 +156,8 @@ class Snapshot:
             disagreeing=frozenset(data.get("disagreeing", [])),
             complete=bool(data.get("complete", False)),
             wanted=tuple(
-                Job(Variable(v), int(y), Reanalysis(s)) for v, y, s in data.get("wanted", [])
+                Job(Variable(v), int(y), Reanalysis(s), domain=domain)
+                for v, y, s in data.get("wanted", [])
             ),
             wanted_at=_time(data.get("wanted_at")),
         )
@@ -213,12 +219,13 @@ def assess(
     built: Mapping[str, int],
     runs: Sequence[Run],
     jobs: Sequence[JobRecord],
+    domain: Domain = Domain.FRANCE,
 ) -> Assessment:
     """Each wanted asset's status, from the release (`built`: sizes by name) and the runs."""
     by_key = {(j.variable.value, j.year): j.asset_name for j in wanted}
     by_asset: dict[str, list[JobRecord]] = {}
     for record in jobs:
-        asset = job_asset(record.name, by_key)
+        asset = job_asset(record.name, by_key, domain)
         if asset is not None:
             by_asset.setdefault(asset, []).append(record)
     active = next((run for run in runs if run.active), None)
@@ -240,8 +247,8 @@ def assess(
     superseded = tuple(
         name
         for name in sorted(built)
-        if name.endswith("-interim.parquet")
-        and name.replace("-interim.parquet", "-validated.parquet") in built
+        if name.endswith(f"-interim{domain.suffix}")
+        and name.replace(f"-interim{domain.suffix}", f"-validated{domain.suffix}") in built
     )
     return Assessment(
         wanted=tuple(wanted),
@@ -254,11 +261,14 @@ def assess(
     )
 
 
-def job_asset(name: str, by_key: Mapping[tuple[str, int], str]) -> str | None:
-    """The asset a job builds: its name, or its variable and year under the old names."""
-    if name.endswith(".parquet"):
+def job_asset(
+    name: str, by_key: Mapping[tuple[str, int], str], domain: Domain = Domain.FRANCE
+) -> str | None:
+    """The asset of `domain` a job builds: its name, or, for France's first runs, its variable and
+    year under the old names."""
+    if name.endswith(domain.suffix):
         return name
-    old = OLD_JOB_NAME.fullmatch(name)
+    old = OLD_JOB_NAME.fullmatch(name) if domain is Domain.FRANCE else None
     return by_key.get((old.group(1), int(old.group(2)))) if old else None
 
 
@@ -305,8 +315,9 @@ def render(now: Assessment, snapshot: Snapshot, at: datetime, supervisor_url: st
     built = now.counts[Status.BUILT] + now.counts[Status.DISAGREES]
     share = built / total if total else 0.0
     parts = [f"{now.counts[s]} {label}" for s, label in SHORT.items() if now.counts[s]]
+    title = TITLES[now.wanted[0].domain if now.wanted else Domain.FRANCE]
     lines = [
-        f"## CAMS archive: {built} of {total} assets",
+        f"## {title}: {built} of {total} assets",
         "",
         f"`{_bar(share)}` {share:.0%}",
         "",
@@ -369,6 +380,7 @@ def supervise(
     at: datetime,
     supervisor_url: str,
     offered: plan.Years,
+    domain: Domain = Domain.FRANCE,
 ) -> Decision:
     """Read what the workflow gathered in `state`, and write the decision, the issue's body and
     the comments in `out`.
@@ -380,12 +392,12 @@ def supervise(
     runs = parse_runs(_load(state / "runs.json"))
     jobs = parse_jobs(_load(state / "jobs.json"))
     issues = _load(state / "issue.json")
-    previous = Snapshot.from_body(issues[0]["body"] if issues else None)
+    previous = Snapshot.from_body(issues[0]["body"] if issues else None, domain)
 
     wanted, wanted_at = previous.wanted, previous.wanted_at
     if not wanted or wanted_at is None or at - wanted_at > WANTED_MAX_AGE:
-        wanted, wanted_at = tuple(plan.wanted(list(Variable), None, offered)), at
-    now = assess(wanted, built, runs, jobs)
+        wanted, wanted_at = tuple(plan.wanted(list(Variable), None, offered, domain)), at
+    now = assess(wanted, built, runs, jobs, domain)
     comments = events(previous, now, runs, jobs)
     snapshot = Snapshot(
         active_run=now.active_run.id if now.active_run else None,
@@ -441,7 +453,8 @@ def _completed(record: JobRecord) -> float:
 def _ended(run: Run, now: Assessment, jobs: Sequence[JobRecord]) -> str:
     assets = set(now.statuses)
     by_key = {(j.variable.value, j.year): j.asset_name for j in now.wanted}
-    own = [j for j in jobs if j.run_id == run.id and job_asset(j.name, by_key) in assets]
+    domain = now.wanted[0].domain if now.wanted else Domain.FRANCE
+    own = [j for j in jobs if j.run_id == run.id and job_asset(j.name, by_key, domain) in assets]
     built = sum(j.conclusion == "success" or j.failed_step == CHECK_STEP for j in own)
     failed = sum(j.conclusion in FAILED and j.failed_step != CHECK_STEP for j in own)
     left = f" {now.left} assets left." if now.left else ""

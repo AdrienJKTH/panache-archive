@@ -7,9 +7,11 @@ import numpy as np
 import pyarrow.parquet as pq
 import pytest
 
-from helpers import GRID_LATS, GRID_LONS, FakeAds, synthetic
+from helpers import GRID_LATS, GRID_LONS, REGULAR_LATS, FakeAds, on_regular_grid, synthetic
+from panache_archive import cells
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata, to_table
 from panache_archive.daily import daily_max_8h_means, daily_means
+from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Statistic, Variable
 
 LATS = np.array([41.05, 45.75, 51.45])
@@ -190,3 +192,50 @@ def test_a_file_from_elsewhere_is_not_an_asset(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="not an asset"):
         read_metadata(path)
+
+
+def test_a_whole_domain_asset_is_named_cells() -> None:
+    job = Job(Variable.PM10, 2021, Reanalysis.VALIDATED, domain=Domain.EUROPE)
+
+    assert job.asset_name == "cams-pm10-2021-validated.cells"
+
+
+def test_the_whole_domain_holds_france_s_very_numbers(fake_ads: FakeAds, tmp_path: Path) -> None:
+    fake_ads.alter = on_regular_grid
+    france = Job(Variable.OZONE, 2021, Reanalysis.VALIDATED, (1, 2))
+    europe = Job(Variable.OZONE, 2021, Reanalysis.VALIDATED, (1, 2), Domain.EUROPE)
+
+    table = pq.read_table(build(france, tmp_path / "dist", tmp_path / "work", download=fake_ads))
+    path = build(europe, tmp_path / "dist", tmp_path / "work", download=fake_ads, band_rows=3)
+
+    header, hundredths = cells.read_all(path)
+    assert path.name == "cams-ozone-2021-01-02-validated.cells"
+    assert (header.rows, header.columns, header.days, header.statistics) == (8, 14, 59, 2)
+    np.testing.assert_array_equal(header.lats, REGULAR_LATS)
+    for index, name in enumerate(["mean", "max_8h_mean"]):
+        theirs = table[name].to_numpy().reshape(5, 14, 59)
+        ours = (hundredths[index, :, 3:] / 100).astype(np.float32).transpose(1, 2, 0)
+        np.testing.assert_array_equal(ours, theirs)  # 41.05° N and north: France's box
+    metadata = read_metadata(path)
+    assert metadata["domain"] == "europe"
+    assert metadata["statistics"] == ["mean", "max_8h_mean"]
+    assert metadata["box"] == {"south": 29.9, "north": 72.1, "west": -25.1, "east": 45.1}
+
+
+def test_bands_change_nothing(fake_ads: FakeAds, tmp_path: Path) -> None:
+    fake_ads.alter = on_regular_grid
+    job = Job(Variable.OZONE, 2021, Reanalysis.VALIDATED, (1, 2), Domain.EUROPE)
+
+    whole = cells.read_all(build(job, tmp_path / "one", tmp_path / "work", download=fake_ads))[1]
+    banded = build(job, tmp_path / "bands", tmp_path / "work", download=fake_ads, band_rows=3)
+
+    np.testing.assert_array_equal(cells.read_all(banded)[1], whole)
+    assert len(fake_ads.requests) == 4  # two months, twice: each month downloaded once
+
+
+def test_a_band_holds_at_least_a_row(fake_ads: FakeAds, tmp_path: Path) -> None:
+    job = Job(Variable.PM10, 2021, Reanalysis.VALIDATED, (2,), Domain.EUROPE)
+
+    with pytest.raises(ValueError, match="hold nothing"):
+        build(job, tmp_path, tmp_path / "work", download=fake_ads, band_rows=0)
+    assert not any((tmp_path / "work").glob("*.nc"))

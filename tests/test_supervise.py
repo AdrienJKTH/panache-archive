@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from panache_archive.build import Job
+from panache_archive.domain import Domain
 from panache_archive.supervise import (
     CHECK_STEP,
     MAX_FAILURES,
@@ -354,3 +355,48 @@ def test_a_stale_list_is_asked_again(tmp_path: Path, age_hours: int) -> None:
 
     report = (tmp_path / "out" / "report.md").read_text(encoding="utf-8")
     assert "0 of 2 assets" in report
+
+
+def test_the_whole_domain_is_supervised_apart(tmp_path: Path) -> None:
+    cells_2013 = "cams-pm10-2013-validated.cells"
+    built = {cells_2013: 150, "cams-pm10-2014-validated.parquet": 10}
+    jobs = [
+        {"run_id": 900, "name": "cams-pm10-2014-validated.parquet", "status": "completed"}
+        | {"conclusion": "success", "started_at": None, "completed_at": None, "failed_step": None},
+        {"run_id": 900, "name": "pm10 2014", "status": "completed", "conclusion": "failure"}
+        | {"started_at": None, "completed_at": None, "failed_step": "Build"},
+    ]
+    write_state(tmp_path / "state", built, [], jobs, None)
+
+    decision = supervise(
+        tmp_path / "state",
+        tmp_path / "out",
+        at=AT,
+        supervisor_url="u",
+        offered=offered,
+        domain=Domain.EUROPE,
+    )
+
+    assert decision.dispatch  # France's 2014 asset is not the whole domain's, nor its jobs
+    report = (tmp_path / "out" / "report.md").read_text(encoding="utf-8")
+    assert report.startswith("## CAMS archive over the whole domain: 1 of 2 assets")
+    snapshot = Snapshot.from_body(report, Domain.EUROPE)
+    assert [j.asset_name for j in snapshot.wanted] == [cells_2013, "cams-pm10-2014-validated.cells"]
+
+
+def test_whole_domain_jobs_and_interim_assets_go_by_their_suffix() -> None:
+    by_key = {("pm10", 2013): "cams-pm10-2013-validated.cells"}
+    europe = (Job(Variable.PM10, 2025, Reanalysis.INTERIM, domain=Domain.EUROPE),)
+    built = {
+        "cams-pm10-2024-interim.cells": 1,
+        "cams-pm10-2024-validated.cells": 1,
+        "cams-pm10-2023-interim.parquet": 1,
+        "cams-pm10-2023-validated.parquet": 1,
+    }
+
+    assert job_asset("cams-pm10-2013-validated.cells", by_key, Domain.EUROPE) is not None
+    assert job_asset("pm10 2013", by_key, Domain.EUROPE) is None
+    assert job_asset("cams-pm10-2013-validated.parquet", by_key, Domain.EUROPE) is None
+    assert assess(europe, built, [], [], Domain.EUROPE).superseded == (
+        "cams-pm10-2024-interim.cells",
+    )
