@@ -1,0 +1,48 @@
+name: Mirror
+
+# Keeps the whole domain's release mirrored on Hugging Face (Panache's D66): the public dataset
+# adrien4916/air_qual_indicators, folder cams-europe-v1, which Panache reads when GitHub fails.
+# After each CAMS run and every three hours, it uploads what the mirror lacks or holds otherwise,
+# deletes what the release dropped, and keeps the dataset card. A run with nothing to do costs two
+# listings.
+
+on:
+  workflow_run:
+    workflows: [CAMS]
+    types: [completed]
+  schedule:
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    name: Mirror on Hugging Face
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: List the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/cams-europe-v1" > release.json
+          || echo '{"assets": []}' > release.json
+      - name: Mirror
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: >
+          uv run panache-archive mirror --release release.json
+          --card docs/hugging-face-card.md --workdir "$RUNNER_TEMP"
+          | tee -a "$GITHUB_STEP_SUMMARY"
