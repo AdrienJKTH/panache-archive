@@ -1,5 +1,5 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
-`era5-build` and `mirror`, as the workflows run them."""
+`era5-build`, `mirror`, `stations` and `static`, as the workflows run them."""
 
 import argparse
 import asyncio
@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from panache_archive import ads, check, era5, mirror, plan, supervise
+from panache_archive import ads, check, era5, mirror, plan, static, stations, supervise
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
 from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Variable
@@ -132,6 +132,22 @@ def _mirror(args: argparse.Namespace) -> int:
     return 0
 
 
+def _stations(args: argparse.Namespace) -> int:
+    last_year = args.last_year or date.today().year - 1
+    pollutant = stations.Pollutant(args.pollutant)
+    print(stations.build(args.country, pollutant, Path(args.out), last_year=last_year))
+    return 0
+
+
+def _static(args: argparse.Namespace) -> int:
+    layers = Path(args.layers)
+    path = static.build(
+        layers / "population.tif", layers / "built_up.tif", layers / "elevation.tif", Path(args.out)
+    )
+    print(path)
+    return 0
+
+
 def _months(text: str) -> tuple[int, ...]:
     """`all`, a month such as `2`, or a span such as `2-5`."""
     return ALL_MONTHS if text.strip() == "all" else plan.parse_span(text)
@@ -198,6 +214,24 @@ def _parser() -> argparse.ArgumentParser:
     mirroring.add_argument("--card", required=True, help="the dataset card to keep on the mirror")
     mirroring.add_argument("--workdir", help="where each batch of assets is downloaded")
     mirroring.set_defaults(run=_mirror)
+
+    stationing = commands.add_parser(
+        "stations", help="build a country's daily means at its stations, from the EEA (E1a)"
+    )
+    stationing.add_argument("--country", default="FR", help="the EEA's two-letter code")
+    stationing.add_argument(
+        "--pollutant", required=True, choices=[p.value for p in stations.Pollutant]
+    )
+    stationing.add_argument("--last-year", type=int, help="the last year kept (default: last year)")
+    stationing.add_argument("--out", default="dist", help="where the asset is written")
+    stationing.set_defaults(run=_stations)
+
+    fixing = commands.add_parser(
+        "static", help="build the 1 km fixed layers from GDAL's cuts (scripts/static-layers.sh)"
+    )
+    fixing.add_argument("--layers", required=True, help="the folder of the cut GeoTIFFs")
+    fixing.add_argument("--out", default="dist", help="where the asset is written")
+    fixing.set_defaults(run=_static)
     return parser
 
 
