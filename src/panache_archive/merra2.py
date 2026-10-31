@@ -153,7 +153,8 @@ def read_day(day: date, fetch: Fetch) -> FloatArray:
     with netCDF4.Dataset("day.nc4", memory=data) as dataset:
         lats = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
         lons = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
-        if not (np.allclose(lats, LATS) and np.allclose(lons, LONS)):
+        same_shape = lats.shape == LATS.shape and lons.shape == LONS.shape
+        if not (same_shape and np.allclose(lats, LATS) and np.allclose(lons, LONS)):
             raise ValueError(f"{day}: the cut is not the domain's grid")
         means = []
         for species in SPECIES:

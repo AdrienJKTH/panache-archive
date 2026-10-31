@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from helpers import REGULAR_LATS, REGULAR_LONS, FakeAds, FakeOpenMeteo, on_regular_grid
-from panache_archive import cli, era5
+from panache_archive import cells, cli, era5, merra2
 from panache_archive.build import Job, to_table
 from panache_archive.check import EUROPE_PLACES, PLACES
 from panache_archive.variables import Reanalysis, Variable
@@ -241,3 +241,76 @@ def test_check_compares_the_whole_domain_with_its_france_twin(
     report = summary.read_text(encoding="utf-8")
     assert report.count("| mean |") == len(EUROPE_PLACES)
     assert "against France's `cams-pm10-2021-02-validated.parquet`: 70 cells by 28 days" in report
+
+
+def test_merra2_commands_need_the_earthdata_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EARTHDATA_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit, match="EARTHDATA_TOKEN"):
+        cli.main(["merra2-build", "--year", "2021", "--months", "2"])
+
+
+def test_merra2_plan_lists_the_jobs_and_what_they_supersede(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked: list[tuple[list[int], set[str]]] = []
+
+    def plan(
+        years: list[int], built: set[str], _today: date, _fetch: object
+    ) -> tuple[list[merra2.Merra2Job], list[str]]:
+        asked.append((list(years), built))
+        return [merra2.Merra2Job(2026, tuple(range(1, 10)))], ["merra2-2026-01-08.cells"]
+
+    monkeypatch.setenv("EARTHDATA_TOKEN", "token")
+    monkeypatch.setattr(merra2, "plan", plan)
+    built = tmp_path / "built.txt"
+    built.write_text("merra2-2026-01-08.cells\n", encoding="utf-8")
+    superseded = tmp_path / "superseded.txt"
+
+    asked_for = ["merra2-plan", "--years", "2025-2026", "--built", str(built)]
+    code = cli.main([*asked_for, "--superseded", str(superseded)])
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out) == [
+        {"asset": "merra2-2026-01-09.cells", "year": 2026, "months": 9}
+    ]
+    assert asked == [([2025, 2026], {"merra2-2026-01-08.cells"})]
+    assert superseded.read_text(encoding="utf-8") == "merra2-2026-01-08.cells"
+
+
+def test_merra2_build_and_check_go_through_the_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    jobs: list[merra2.Merra2Job] = []
+
+    def build(job: merra2.Merra2Job, out: Path, _fetch: object) -> Path:
+        jobs.append(job)
+        path = out / job.asset_name
+        out.mkdir(parents=True, exist_ok=True)
+        cells.write(
+            path,
+            merra2.LATS[:2],
+            merra2.LONS[:2],
+            date(2021, 2, 1),
+            [np.ones((28, 2, 2))] * 3,
+            metadata={"source": "merra2"},
+        )
+        return path
+
+    compared: list[Path] = []
+
+    def compare(path: Path, **_: object) -> list[object]:
+        compared.append(path)
+        return []
+
+    monkeypatch.setenv("EARTHDATA_TOKEN", "token")
+    monkeypatch.setattr(merra2, "build", build)
+    monkeypatch.setattr(merra2, "compare", compare)
+
+    cli.main(["merra2-build", "--year", "2021", "--months", "2", "--out", str(tmp_path)])
+    asset = tmp_path / "merra2-2021-02.cells"
+    code = cli.main(["check", str(asset)])
+
+    assert jobs == [merra2.Merra2Job(2021, (2,))]
+    assert capsys.readouterr().out.startswith(str(asset))
+    assert (code, compared) == (0, [asset])
