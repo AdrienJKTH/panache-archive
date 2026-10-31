@@ -16,6 +16,7 @@ from panache_archive.merra2 import LATS, LONS, SPECIES, Merra2Job
 
 LYON = Place("Lyon", 45.76, 4.84)
 """MERRA-2's cell (46.0, 5.0): row 32, column 48."""
+FEBRUARY_2021 = [date(2021, 2, 1) + timedelta(days=n) for n in range(28)]
 
 
 def hourly(species: str, day: date) -> np.ndarray:
@@ -37,7 +38,7 @@ def netcdf_day(
     day: date, *, lats: np.ndarray = LATS, units: str = "kg m-3", gap_hours: int = 0
 ) -> bytes:
     """The answer OPeNDAP gives for the domain's cut of `day`."""
-    dataset = netCDF4.Dataset("day.nc4", "w", memory=0, format="NETCDF4")
+    dataset = netCDF4.Dataset(f"fake-{day:%Y%m%d}.nc4", "w", memory=0, format="NETCDF4")
     dataset.createDimension("time", 24)
     dataset.createDimension("lat", lats.size)
     dataset.createDimension("lon", LONS.size)
@@ -55,12 +56,19 @@ def netcdf_day(
 
 class FakeOpenDap:
     """Serves `netcdf_day` for each day's URL of stream 400, or 401 for `reprocessed` days; 404
-    for days after `last_day`."""
+    for days after `last_day`. netCDF4 (HDF5) is not thread-safe, so the days a build fetches
+    from its threads are `prepared` here, in the test's thread."""
 
-    def __init__(self, last_day: date = date(2026, 9, 30), reprocessed: set[date] | None = None):
+    def __init__(
+        self,
+        last_day: date = date(2026, 9, 30),
+        reprocessed: set[date] | None = None,
+        prepared: list[date] | None = None,
+    ):
         self.last_day = last_day
         self.reprocessed = reprocessed or set()
         self.asked: list[str] = []
+        self.days = {day: netcdf_day(day) for day in prepared or []}
 
     def __call__(self, url: str) -> bytes:
         self.asked.append(url)
@@ -72,7 +80,7 @@ class FakeOpenDap:
             raise urllib.error.HTTPError(url, 404, "Not Found", Message(), None)
         if granule.endswith(".dds"):
             return b"Dataset {} day;"
-        return netcdf_day(day)
+        return self.days[day] if day in self.days else netcdf_day(day)
 
 
 def test_a_day_is_cut_to_the_domain_and_averaged() -> None:
@@ -128,7 +136,7 @@ def test_a_missing_day_is_an_error() -> None:
 def test_an_asset_holds_each_species_of_each_day(tmp_path: Path) -> None:
     job = Merra2Job(2021, (2,))
 
-    path = merra2.build(job, tmp_path, FakeOpenDap(), concurrency=4)
+    path = merra2.build(job, tmp_path, FakeOpenDap(prepared=FEBRUARY_2021), concurrency=4)
 
     assert path.name == "merra2-2021-02.cells"
     header = cells.read_header(path)
@@ -207,7 +215,7 @@ class FakeGiovanni:
 
 
 def test_an_asset_agrees_with_giovanni(tmp_path: Path) -> None:
-    path = merra2.build(Merra2Job(2021, (2,)), tmp_path, FakeOpenDap())
+    path = merra2.build(Merra2Job(2021, (2,)), tmp_path, FakeOpenDap(prepared=FEBRUARY_2021))
 
     comparisons = merra2.compare(path, [LYON], fetch=FakeGiovanni())
 
@@ -216,7 +224,7 @@ def test_an_asset_agrees_with_giovanni(tmp_path: Path) -> None:
 
 
 def test_an_asset_off_giovanni_disagrees(tmp_path: Path) -> None:
-    path = merra2.build(Merra2Job(2021, (2,)), tmp_path, FakeOpenDap())
+    path = merra2.build(Merra2Job(2021, (2,)), tmp_path, FakeOpenDap(prepared=FEBRUARY_2021))
 
     comparisons = merra2.compare(path, [LYON], fetch=FakeGiovanni(offset=0.1))
 
@@ -224,7 +232,7 @@ def test_an_asset_off_giovanni_disagrees(tmp_path: Path) -> None:
 
 
 def test_comparing_needs_a_merra2_asset_and_the_token(tmp_path: Path) -> None:
-    path = merra2.build(Merra2Job(2021, (2,)), tmp_path, FakeOpenDap())
+    path = merra2.build(Merra2Job(2021, (2,)), tmp_path, FakeOpenDap(prepared=FEBRUARY_2021))
     other = tmp_path / "other.cells"
     cells.write(
         other, LATS[:2], LONS[:2], date(2021, 1, 1), [np.ones((1, 2, 2))], metadata={"x": 1}

@@ -143,14 +143,24 @@ def day_url(stream: str, day: date) -> str:
 
 def read_day(day: date, fetch: Fetch) -> FloatArray:
     """The day's means, `(species, lat, lon)` in μg/m³, NaN with fewer than 18 hours."""
-    for stream in STREAMS:
+    return day_means(day, fetch_day(day, fetch))
+
+
+def fetch_day(day: date, fetch: Fetch) -> bytes:
+    """The domain's cut of `day`, from its `MERRA2_400` file, else its reprocessed one."""
+    for stream in STREAMS[:-1]:
         try:
-            data = fetch(day_url(stream, day))
-            break
+            return fetch(day_url(stream, day))
         except urllib.error.HTTPError as error:
-            if error.code != 404 or stream == STREAMS[-1]:
+            if error.code != 404:
                 raise
-    with netCDF4.Dataset("day.nc4", memory=data) as dataset:
+    return fetch(day_url(STREAMS[-1], day))
+
+
+def day_means(day: date, data: bytes) -> FloatArray:
+    """The means of a day's cut, `(species, lat, lon)`. netCDF4 (HDF5) is not thread-safe: call
+    it from one thread at a time."""
+    with netCDF4.Dataset(f"merra2-{day:%Y%m%d}.nc4", memory=data) as dataset:
         lats = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
         lons = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
         same_shape = lats.shape == LATS.shape and lons.shape == LONS.shape
@@ -171,11 +181,13 @@ def read_day(day: date, fetch: Fetch) -> FloatArray:
 
 
 def build(job: Merra2Job, out_dir: Path, fetch: Fetch, *, concurrency: int = CONCURRENCY) -> Path:
-    """Build `job`'s asset in `out_dir`, `concurrency` days at once; returns its path."""
+    """Build `job`'s asset in `out_dir`; returns its path. The days are fetched `concurrency` at
+    once, and read one by one as they come, since netCDF4 is not thread-safe."""
     days = [job.first_day + timedelta(days=n) for n in range(job.days)]
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(concurrency) as pool:
-        daily = np.stack(list(pool.map(lambda day: read_day(day, fetch), days)))
+        fetched = pool.map(lambda day: fetch_day(day, fetch), days)
+        daily = np.stack([day_means(day, data) for day, data in zip(days, fetched, strict=True)])
     logger.info("%s: %d days read in %.0f s", job.asset_name, len(days), time.monotonic() - started)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / job.asset_name
