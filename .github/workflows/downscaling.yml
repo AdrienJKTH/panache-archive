@@ -1,0 +1,110 @@
+name: Downscaling inputs
+
+# Builds what Panache's downscaling learns from and maps with (Panache's P4) into the release
+# downscaling-v1: each pollutant's daily means at France's stations, from the EEA's validated
+# hours (~1.3 GB of files, read and dropped), and the 1 km fixed layers (GHS-POP, GHS-BUILT-S and
+# the Copernicus DEM, cut by GDAL). Labelling a pull request `pilot-downscaling` builds them as
+# the run's artifacts, without touching the release.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: downscaling-${{ github.event_name == 'workflow_dispatch' && 'build' || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: downscaling-v1
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  release:
+    name: Release
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "Downscaling inputs over France"
+          --notes-file docs/downscaling-release.md
+
+  stations:
+    name: Stations, ${{ matrix.pollutant }}
+    needs: release
+    if: >
+      always() && needs.release.result != 'failure'
+      && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'pilot-downscaling')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        pollutant: [pm2_5, nitrogen_dioxide]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build
+        run: uv run panache-archive stations --pollutant "${{ matrix.pollutant }}" --out dist
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.parquet --clobber
+      - name: Keep as the pilot's artifact
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stations-${{ matrix.pollutant }}
+          path: dist/
+
+  static:
+    name: Fixed layers
+    needs: release
+    if: >
+      always() && needs.release.result != 'failure'
+      && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'pilot-downscaling')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Install GDAL
+        run: sudo apt-get update -q && sudo apt-get install -y -q gdal-bin
+      - name: Cut the sources onto the grid
+        run: scripts/static-layers.sh work
+      - name: Build
+        run: uv run panache-archive static --layers work --out dist
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.npz --clobber
+      - name: Keep as the pilot's artifact
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: static
+          path: dist/
