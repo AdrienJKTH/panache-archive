@@ -200,11 +200,13 @@ def test_build_writes_each_described_point_up_to_the_last_year(tmp_path: Path) -
     )
 
     def read(request: urllib.request.Request | str) -> bytes:
-        if isinstance(request, urllib.request.Request):
+        assert isinstance(request, urllib.request.Request)
+        if request.get_method() == "POST":
             return listing(*files)
-        if request == stations.METADATA_URL:
+        assert request.get_header("User-agent") == stations.USER_AGENT
+        if request.full_url == stations.METADATA_URL:
             return points
-        return files[request]
+        return files[request.full_url]
 
     path = stations.build("FR", Pollutant.PM2_5, tmp_path, last_year=2021, read=read, downloads=2)
 

@@ -55,6 +55,8 @@ MIN_HOURS: Final = 18
 FILE_HOURS_AHEAD_OF_UTC: Final = np.timedelta64(1, "h")
 """Every file's hours start at UTC+1 (Panache's D70)."""
 DOWNLOADS: Final = 8
+USER_AGENT: Final = "panache-archive (+https://github.com/AdrienJKTH/panache-archive)"
+"""discomap.eea.europa.eu answers 403 to urllib's own User-Agent."""
 """Files downloaded at once."""
 VALUE_DECIMALS: Final = 2
 
@@ -239,9 +241,9 @@ def build(
     """
     years = range(FIRST_YEAR, last_year + 1)
     urls = list_files(country, pollutant, years, read=read)
-    points = read_points(read(METADATA_URL), country, pollutant)
+    points = read_points(read(_get(METADATA_URL)), country, pollutant)
     with ThreadPoolExecutor(max_workers=downloads) as pool:
-        found = list(pool.map(lambda url: daily_means(read(url)), urls))
+        found = list(pool.map(lambda url: daily_means(read(_get(url))), urls))
     last_day = np.datetime64(date(last_year, 12, 31), "D")
     kept = [_until(p, last_day) for p in found]
     unknown = sorted(p.sampling_point for p in kept if p.sampling_point not in points)
@@ -293,6 +295,10 @@ def to_table(found: Sequence[PointDays], metadata: Mapping[str, Any]) -> pa.Tabl
         }
     )
     return table.replace_schema_metadata({METADATA_KEY: json.dumps(metadata).encode()})
+
+
+def _get(url: str) -> urllib.request.Request:
+    return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
 
 def _until(found: PointDays, last_day: np.datetime64) -> PointDays:
