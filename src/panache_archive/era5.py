@@ -68,6 +68,11 @@ CHUNK_HOURS: Final = 504
 HUMIDITY_CORRELATION: Final = 0.99
 """The API's humidity comes from altitude-corrected temperature and dew point, which no daily
 offset undoes: it is checked by correlation."""
+PRECIPITATION_CORRELATION: Final = 0.98
+"""Since October 2026 the API sums a day's rain over the hours stamped 00:00 to 23:00 UTC, while
+the archive keeps the 24 hours ending in the day, 01:00 to 24:00 (Panache's D62): a day can differ
+by an hour of rain, so the rain is checked by correlation (r was 0.989 to 0.999 at nine places in
+January 2021)."""
 STEP: Final = 0.25
 BAND_ROWS: Final = 24
 """Latitudes read at a time: a year of one variable over 24 rows of the whole domain is ~0.5 GB
@@ -140,6 +145,11 @@ UNITS: Final[Mapping[Daily, str]] = {
     Daily.CLOUD_COVER: "%",
     Daily.BOUNDARY_LAYER_HEIGHT: "m",
 }
+CORRELATED: Final = {
+    Daily.RELATIVE_HUMIDITY: HUMIDITY_CORRELATION,
+    Daily.PRECIPITATION: PRECIPITATION_CORRELATION,
+}
+"""The columns judged by correlation instead of by difference."""
 
 
 class Bucket(Protocol):
@@ -431,9 +441,7 @@ def compare(
                     allowed,
                     offset=column is Daily.TEMPERATURE,
                     circular=column is Daily.WIND_DIRECTION,
-                    min_correlation=(
-                        HUMIDITY_CORRELATION if column is Daily.RELATIVE_HUMIDITY else None
-                    ),
+                    min_correlation=CORRELATED.get(column),
                 )
             )
     return comparisons

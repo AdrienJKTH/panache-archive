@@ -215,9 +215,16 @@ class FakeArchiveApi:
     """The archive API at Lyon's point (543, 739), from `synthetic`, as the API makes its days:
     temperature and dew point corrected for altitude, values rounded."""
 
-    def __init__(self, units: dict[str, str] | None = None, days_short: int = 0) -> None:
+    def __init__(
+        self,
+        units: dict[str, str] | None = None,
+        days_short: int = 0,
+        rain_hour_earlier: bool = False,
+    ) -> None:
         self.units = units or {}
         self.days_short = days_short
+        self.rain_hour_earlier = rain_hour_earlier
+        """Sum the rain over 00:00 to 23:00, as the API does since October 2026 (D62)."""
         self.queries: list[dict[str, str]] = []
 
     def __call__(self, url: str) -> bytes:
@@ -227,9 +234,7 @@ class FakeArchiveApi:
         days = (date.fromisoformat(query["end_date"]) - first_day).days + 1
         first = hour_of(first_day)
         values = {
-            v: synthetic(
-                v, first + np.arange(days * 24) + (1 if v in era5.ACCUMULATED else 0), 543, 739
-            )[:, None, None]
+            v: synthetic(v, first + np.arange(days * 24) + self._shift(v), 543, 739)[:, None, None]
             for v in Hourly
         }
         values[Hourly.TEMPERATURE] = values[Hourly.TEMPERATURE] + ALTITUDE_OFFSET
@@ -252,6 +257,11 @@ class FakeArchiveApi:
             "hourly_units": {Daily.BOUNDARY_LAYER_HEIGHT.value: "m"},
         }
         return json.dumps(answer).encode()
+
+    def _shift(self, variable: Hourly) -> int:
+        if variable is Hourly.PRECIPITATION and self.rain_hour_earlier:
+            return 0
+        return 1 if variable in era5.ACCUMULATED else 0
 
 
 @pytest.fixture
@@ -469,3 +479,12 @@ def test_whole_domain_jobs_are_named_cells() -> None:
     assert [
         j.asset_name for j in era5.missing_years([2020, 2021], {"era5-2020.cells"}, Domain.EUROPE)
     ] == ["era5-2021.cells"]
+
+
+def test_rain_summed_an_hour_earlier_still_agrees_by_correlation(asset: Path) -> None:
+    comparisons = era5.compare(asset, [LYON], get=FakeArchiveApi(rain_hour_earlier=True))
+
+    (rain,) = [c for c in comparisons if c.column == Daily.PRECIPITATION.value]
+    assert rain.max_difference > rain.tolerance  # the days differ by an hour of rain
+    assert rain.min_correlation == era5.PRECIPITATION_CORRELATION
+    assert rain.agrees
