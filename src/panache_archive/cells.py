@@ -4,7 +4,9 @@ so that one cell's year is read from afar in two small requests (Panache's D66).
 Little-endian throughout:
 - **Header**, 64 bytes (`HEADER`): magic, version, statistics, cells per frame, the grid (centre
   of the south-west cell, step, rows and columns), the first day, the days, the scale and the
-  length of the metadata.
+  length of the metadata. A grid of two steps (MERRA-2's 0.5° by 0.625°) takes version 2
+  (`HEADER_TWO_STEPS`): the latitude and longitude steps as two float32, in the place of the one
+  float64 step.
 - **Offset table**: one `uint64` per frame and one more, where each frame starts and where the
   last one ends. A frame holds `cells_per_frame` cells of one latitude row; the frame of row `r`
   and column `c` is `r * blocks + c // cells_per_frame`. So a cell's two offsets lie at a byte
@@ -37,6 +39,9 @@ IntArray = NDArray[np.int32]
 MAGIC: Final = b"PANCELLS"
 VERSION: Final = 1
 HEADER: Final = struct.Struct("<8sHHHHdddIIiIII")
+VERSION_TWO_STEPS: Final = 2
+HEADER_TWO_STEPS: Final = struct.Struct("<8sHHHHddffIIiIII")
+"""As `HEADER`, with a latitude and a longitude step (float32: exact for 0.5° and 0.625°)."""
 FRAME_HEADER: Final = struct.Struct("<IIII")
 """Row, first column, cells and days of a frame."""
 OFFSET: Final = struct.Struct("<Q")
@@ -64,6 +69,12 @@ class Header:
     days: int
     scale: int = SCALE
     metadata_length: int = 0
+    lon_step: float | None = None
+    """The longitude step when it differs from `step`, the latitude one (version 2)."""
+
+    @property
+    def longitude_step(self) -> float:
+        return self.step if self.lon_step is None else self.lon_step
 
     @property
     def blocks(self) -> int:
@@ -85,7 +96,7 @@ class Header:
 
     @property
     def lons(self) -> FloatArray:
-        return _axis(self.first_lon, self.step, self.columns)
+        return _axis(self.first_lon, self.longitude_step, self.columns)
 
     def frame_of(self, row: int, column: int) -> int:
         if not (0 <= row < self.rows and 0 <= column < self.columns):
@@ -97,15 +108,17 @@ class Header:
         return HEADER.size + OFFSET.size * frame, 2 * OFFSET.size
 
     def pack(self) -> bytes:
-        return HEADER.pack(
+        two_steps = self.lon_step is not None and self.lon_step != self.step
+        steps = (self.step, self.longitude_step) if two_steps else (self.step,)
+        return (HEADER_TWO_STEPS if two_steps else HEADER).pack(
             MAGIC,
-            VERSION,
+            VERSION_TWO_STEPS if two_steps else VERSION,
             self.statistics,
             self.cells_per_frame,
             0,
             self.first_lat,
             self.first_lon,
-            self.step,
+            *steps,
             self.rows,
             self.columns,
             (self.first_day - EPOCH).days,
@@ -118,9 +131,11 @@ class Header:
     def unpack(cls, data: bytes) -> "Header":
         if len(data) < HEADER.size or data[: len(MAGIC)] != MAGIC:
             raise ValueError("not a .cells file")
-        fields = HEADER.unpack(data[: HEADER.size])
-        if fields[1] != VERSION:
-            raise ValueError(f".cells version {fields[1]}; this reader knows {VERSION}")
+        version = struct.unpack_from("<H", data, len(MAGIC))[0]
+        if version not in (VERSION, VERSION_TWO_STEPS):
+            raise ValueError(f".cells version {version}; this reader knows 1 and 2")
+        fields = list((HEADER if version == VERSION else HEADER_TWO_STEPS).unpack(data[:64]))
+        lon_step = fields.pop(8) if version == VERSION_TWO_STEPS else None
         return cls(
             statistics=fields[2],
             cells_per_frame=fields[3],
@@ -133,6 +148,7 @@ class Header:
             days=fields[11],
             scale=fields[12],
             metadata_length=fields[13],
+            lon_step=lon_step,
         )
 
 
@@ -152,7 +168,7 @@ def write(
     if not columns or len(shapes) != 1 or next(iter(shapes))[1:] != (lats.size, lons.size):
         raise ValueError(f"columns {shapes} do not match {lats.size} x {lons.size} cells")
     days = next(iter(shapes))[0]
-    step = _step(lats, lons)
+    lat_step, lon_step = _steps(lats, lons)
     # (lat, lon, statistic, day): each frame is then one contiguous slice.
     by_cell = np.ascontiguousarray(
         np.stack([to_hundredths(values) for values in columns]).transpose(2, 3, 0, 1)
@@ -162,11 +178,12 @@ def write(
         cells_per_frame=cells_per_frame,
         first_lat=float(lats[0]),
         first_lon=float(lons[0]),
-        step=step,
+        step=lat_step,
         rows=lats.size,
         columns=lons.size,
         first_day=first_day,
         days=days,
+        lon_step=lon_step if lon_step != lat_step else None,
     )
     codec = pa.Codec("zstd", compression_level=ZSTD_LEVEL)
     offsets = [header.data_start]
@@ -299,10 +316,23 @@ def _join(data: bytes | pa.Buffer) -> IntArray:
     return np.ascontiguousarray(planes.T).view("<i4").reshape(-1)
 
 
-def _step(lats: FloatArray, lons: FloatArray) -> float:
-    """The grid's one step, after checking both axes are regular and ascending."""
-    steps = np.round(np.concatenate([np.diff(lats), np.diff(lons)]), COORDINATE_DECIMALS)
-    if steps.size == 0 or np.unique(steps).size != 1 or steps[0] <= 0:
+def _steps(lats: FloatArray, lons: FloatArray) -> tuple[float, float]:
+    """The grid's latitude and longitude steps, after checking both axes are regular and
+    ascending; an axis of one cell takes the other's step."""
+    lat_step, lon_step = _regular(lats), _regular(lons)
+    if lat_step is None:
+        if lon_step is None:
+            raise ValueError("the cells are not a regular grid, ascending")
+        return lon_step, lon_step
+    return lat_step, lat_step if lon_step is None else lon_step
+
+
+def _regular(axis: FloatArray) -> float | None:
+    """The axis's one step; `None` for a single centre."""
+    if axis.size < 2:
+        return None
+    steps = np.round(np.diff(axis), COORDINATE_DECIMALS)
+    if np.unique(steps).size != 1 or steps[0] <= 0:
         raise ValueError("the cells are not a regular grid, ascending")
     return float(steps[0])
 

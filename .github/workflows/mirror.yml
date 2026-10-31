@@ -2,13 +2,14 @@ name: Mirror
 
 # Keeps the whole domain's releases mirrored on Hugging Face (Panache's D66, D71): the public
 # dataset adrien4916/air_qual_indicators, one folder per release (cams-europe-v1,
-# era5-europe-v1), which Panache reads when GitHub fails. After each CAMS or ERA5 run and every
+# era5-europe-v1, merra2-europe-v1), which Panache reads when GitHub fails. After each CAMS, ERA5
+# or MERRA-2 run and every
 # three hours, it uploads what the mirror lacks or holds otherwise, deletes what a release
 # dropped, and keeps the dataset card. A run with nothing to do costs two listings a release.
 
 on:
   workflow_run:
-    workflows: [CAMS, ERA5]
+    workflows: [CAMS, ERA5, MERRA-2]
     types: [completed]
   schedule:
     - cron: "17 */3 * * *"
@@ -38,7 +39,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          for release in cams-europe-v1 era5-europe-v1; do
+          for release in cams-europe-v1 era5-europe-v1 merra2-europe-v1; do
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release" > release.json \
               || echo '{"assets": []}' > release.json
             echo "**$release**: $(uv run panache-archive mirror --release release.json \
