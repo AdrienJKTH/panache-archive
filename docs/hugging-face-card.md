@@ -15,9 +15,10 @@ tags:
 
 Daily air quality over the whole CAMS Europe domain (30 to 72° N, 25° W to 45° E, 0.1° cells) from 2013, summed up from the hourly **CAMS European air quality reanalyses**. It is built for [Panache](https://github.com/AdrienJKTH/panache-archive), a tool that explains pollution episodes at a place: was a day unusual, and why?
 
-This dataset is a **mirror** of two GitHub releases of [AdrienJKTH/panache-archive](https://github.com/AdrienJKTH/panache-archive), where the assets are built on GitHub Actions and checked. Its files are the very same, one folder per release:
+This dataset is a **mirror** of three GitHub releases of [AdrienJKTH/panache-archive](https://github.com/AdrienJKTH/panache-archive), where the assets are built on GitHub Actions and checked. Its files are the very same, one folder per release:
 - [`cams-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/cams-europe-v1): air quality, described below;
 - [`era5-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/era5-europe-v1): the daily weather of ERA5 over the same domain at 0.25° (169 by 281 points), one file per year such as `era5-2021.cells`, nine statistics in this order: `temperature_2m_mean` (°C, the grid's, not corrected for altitude), `relative_humidity_2m_mean` (%), `wind_speed_10m_mean` (m/s), `wind_direction_10m_dominant` (°), `pressure_msl_mean` (hPa), `precipitation_sum` (mm, the 24 hours ending in the day), `shortwave_radiation_sum` (MJ/m²), `cloud_cover_mean` (%) and `boundary_layer_height` (m). One point a frame. Built from Open-Meteo's public copy of ERA5 (DOI [10.24381/cds.adbb2d47](https://doi.org/10.24381/cds.adbb2d47)); weather data by [Open-Meteo.com](https://open-meteo.com/) (CC-BY 4.0).
+- [`merra2-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/merra2-europe-v1): NASA's MERRA-2 aerosols over the same domain at 0.5° by 0.625° (85 by 113 cells, version 2 of the format: the header's two steps are float32 at bytes 32 and 36), one file per year such as `merra2-2021.cells` (the year under way as `merra2-2026-01-09.cells`), three statistics in this order: `DUSMASS`, `OCSMASS` and `BCSMASS`, UTC daily means in μg/m³. One cell a frame. Source: GMAO (2015), MERRA-2 tavg1_2d_aer_Nx V5.12.4, GES DISC, DOI [10.5067/KLICLTZ8EM9D](https://doi.org/10.5067/KLICLTZ8EM9D).
 
 ## What it holds
 
