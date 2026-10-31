@@ -98,6 +98,13 @@ The release [`era5-v1`](../../releases/tag/era5-v1) holds one asset per year, su
 - **Check**: against the archive API at the four places. Temperature agrees once its constant offset is removed. Humidity is judged by correlation (r ≥ 0.99), since the API derives it from altitude-corrected temperature and dew point. The other columns agree within rounding.
 - The [`ERA5`](.github/workflows/era5.yml) workflow builds the years the release lacks, from 2013 to the last complete year; labelling a pull request `pilot-era5` tries it on January 2021.
 
+## Downscaling inputs
+
+What Panache's downscaling of CAMS to 1 km over France learns from and maps with (Panache's P4), built by the `Downscaling inputs` workflow into the release `downscaling-v1`:
+
+- `stations-fr-<pollutant>.parquet` (`pm2_5`, `nitrogen_dioxide`): one row per sampling point and UTC day with at least 18 valid hours (`sampling_point`, `day`, `mean` in µg/m³, `hours`), from the EEA's validated hours (E1a), 2013 to the last complete year. The files' hours are UTC+1. Each point's station, position, altitude, type and area, from the EEA's metadata, are in the asset's `panache_archive` metadata (`points`).
+- `static-fr-1km.npz`: `population` (inhabitants/km², GHS-POP 2020), `built_up` (share of the cell, GHS-BUILT-S 2020) and `elevation` (m, Copernicus DEM GLO-90 averaged; NaN at sea) on a 1/120° grid over France's box (1,260 by 1,860 cells, twelve by twelve per CAMS cell, rows from the south), with `lats`, `lons` and `about` (JSON). GDAL cuts the sources onto the grid (`scripts/static-layers.sh`).
+
 ## Development
 
 Python 3.12 with [uv](https://docs.astral.sh/uv/):
