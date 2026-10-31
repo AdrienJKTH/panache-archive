@@ -11,9 +11,11 @@ import pyarrow.parquet as pq
 import pytest
 from numpy.typing import NDArray
 
-from panache_archive import era5
-from panache_archive.check import Place
+from panache_archive import cells, era5
+from panache_archive.build import read_metadata
+from panache_archive.check import Place, compare_twin
 from panache_archive.daily import daily_means
+from panache_archive.domain import Domain
 from panache_archive.era5 import Daily, Era5Job, Hourly
 from panache_archive.grid import Box
 
@@ -421,3 +423,49 @@ def test_a_variable_wholly_missing_is_an_error() -> None:
                 FakeBucket(gaps=gaps), Hourly.CLOUD_COVER, Era5Job(2021, (1,)), LYON_ROWS, LYON_COLS
             )
         )
+
+
+def test_a_whole_domain_asset_holds_france_s_numbers_one_point_a_frame(tmp_path: Path) -> None:
+    job = Era5Job(2021, (1,), Domain.EUROPE)
+    france = run(era5.build(Era5Job(2021, (1,)), tmp_path, FakeBucket({2021}), box=SMALL))
+
+    path = run(era5.build(job, tmp_path, FakeBucket({2021}), box=SMALL, band_rows=2))
+
+    assert path.name == "era5-2021-01.cells"
+    header, hundredths = cells.read_all(path)
+    assert (header.rows, header.columns, header.days, header.statistics) == (3, 4, 31, 9)
+    assert (header.cells_per_frame, header.step, header.first_lat) == (1, 0.25, 45.5)
+    twin = compare_twin(path, france)
+    assert (twin.cells, twin.days, twin.differing) == (12, 31, 0)
+    metadata = read_metadata(path)
+    assert (metadata["source"], metadata["domain"]) == ("era5", "europe")
+    assert metadata["columns"] == [c.value for c in Daily]
+    assert hundredths.shape == (9, 31, 3, 4)
+
+
+def test_a_whole_domain_asset_agrees_with_the_archive_api(tmp_path: Path) -> None:
+    job = Era5Job(2021, (1,), Domain.EUROPE)
+    path = run(era5.build(job, tmp_path, FakeBucket({2021, 2022}), box=SMALL))
+
+    comparisons = era5.compare(path, [LYON], get=FakeArchiveApi())
+
+    assert [c.column for c in comparisons if not c.agrees] == []
+    assert all(c.cell == (45.75, 4.75) for c in comparisons)
+
+
+def test_bands_change_nothing_and_must_hold_a_row(tmp_path: Path) -> None:
+    one = run(era5.build(Era5Job(2021, (1,)), tmp_path / "one", FakeBucket({2021}), box=SMALL))
+    banded = run(
+        era5.build(Era5Job(2021, (1,)), tmp_path / "b", FakeBucket({2021}), box=SMALL, band_rows=1)
+    )
+
+    assert pq.read_table(one).drop(["day"]).equals(pq.read_table(banded).drop(["day"]))
+    with pytest.raises(ValueError, match="hold nothing"):
+        run(era5.build(Era5Job(2021, (1,)), tmp_path, FakeBucket({2021}), box=SMALL, band_rows=0))
+
+
+def test_whole_domain_jobs_are_named_cells() -> None:
+    assert Era5Job(2021, domain=Domain.EUROPE).asset_name == "era5-2021.cells"
+    assert [
+        j.asset_name for j in era5.missing_years([2020, 2021], {"era5-2020.cells"}, Domain.EUROPE)
+    ] == ["era5-2021.cells"]

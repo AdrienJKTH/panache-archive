@@ -69,7 +69,7 @@ Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps 
 
 ### The Hugging Face mirror
 
-The whole domain's release `cams-europe-v1` is mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (folder `cams-europe-v1`), which Panache reads when GitHub fails (its decision D66). After each CAMS run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
+The whole domain's releases `cams-europe-v1` and `era5-europe-v1` are mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (one folder per release), which Panache reads when GitHub fails (its decisions D66 and D71). After each CAMS or ERA5 run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
 
 - uploads every asset the mirror lacks, or holds with another size or SHA-256 (in batches of at most 4 GB, one commit each, each file checked against the release's digest);
 - deletes the files the release no longer holds (an interim year replaced by its validated twin);
@@ -97,6 +97,12 @@ The release [`era5-v1`](../../releases/tag/era5-v1) holds one asset per year, su
 - **Days**: UTC; a mean needs 18 hours, a total all 24, as in the CAMS assets.
 - **Check**: against the archive API at the four places. Temperature agrees once its constant offset is removed. Humidity is judged by correlation (r ≥ 0.99), since the API derives it from altitude-corrected temperature and dew point. The other columns agree within rounding.
 - The [`ERA5`](.github/workflows/era5.yml) workflow builds the years the release lacks, from 2013 to the last complete year; labelling a pull request `pilot-era5` tries it on January 2021.
+
+**The whole domain** (Panache's D71): the release [`era5-europe-v1`](../../releases/tag/era5-europe-v1) holds the same nine columns over the whole CAMS Europe domain, 30 to 72° N and 25° W to 45° E (169 by 281 points), as `.cells` files such as `era5-2021.cells` ([the format](#the-whole-domain), one point a frame: a point's year is ~6 KB). The domain is read from the bucket in bands of 24 latitudes. Each asset is checked against the archive API at Lyon, Madrid, Warsaw, Athens and Helsinki, and must hold its France twin's numbers exactly. Run it with:
+
+```bash
+gh workflow run era5.yml -f domain=europe -f years=all
+```
 
 ## Development
 

@@ -1,4 +1,5 @@
-"""ERA5 daily weather over France, from Open-Meteo's public bucket, as its archive API serves it.
+"""ERA5 daily weather over France or the whole CAMS domain, from Open-Meteo's public bucket, as
+its archive API serves it.
 
 Open-Meteo keeps ERA5 (0.25°, hourly) as `.om` files in its AWS Open Data bucket, read over
 HTTPS with no account and no quota: `year_YYYY.om` for past years (until 2021, 2023 for the
@@ -16,6 +17,10 @@ One difference: the API corrects temperature and dew point for the asked point's
 the same constant at a place (+1.22 °C at Lyon), and derives humidity from the corrected pair.
 The archive keeps the cell's own values, which hold together; a per-place model does not mind a
 constant offset.
+
+France's assets are Parquet tables; the whole domain's (30-72° N, 25° W-45° E, 169 by 281
+points) are `.cells` files of one point a frame, read one point at a time from afar (Panache's
+D71). Either is read and summed up in bands of latitudes, for memory.
 """
 
 import asyncio
@@ -36,10 +41,13 @@ import pyarrow.parquet as pq
 from fsspec.implementations.http import HTTPFileSystem
 from omfiles import OmFileReaderAsync
 
+from panache_archive import cells
 from panache_archive.build import ALL_MONTHS, check_months, read_metadata, span, to_table
 from panache_archive.check import (
+    EUROPE_PLACES,
     PLACES,
     Comparison,
+    DaysAt,
     Get,
     Place,
     compare_days,
@@ -49,7 +57,8 @@ from panache_archive.check import (
     tolerance,
 )
 from panache_archive.daily import HOURS_PER_DAY, daily_means, daily_sums
-from panache_archive.grid import FRANCE, Box, FloatArray, box_cells, nearest
+from panache_archive.domain import Domain
+from panache_archive.grid import Box, FloatArray, box_cells, nearest
 
 BASE_URL: Final = "https://openmeteo.s3.amazonaws.com/data/copernicus_era5"
 ARCHIVE_URL: Final = "https://archive-api.open-meteo.com/v1/archive"
@@ -60,6 +69,11 @@ HUMIDITY_CORRELATION: Final = 0.99
 """The API's humidity comes from altitude-corrected temperature and dew point, which no daily
 offset undoes: it is checked by correlation."""
 STEP: Final = 0.25
+BAND_ROWS: Final = 24
+"""Latitudes read at a time: a year of one variable over 24 rows of the whole domain is ~0.5 GB
+in float64, the nine ~4 GB. France's box is two bands."""
+CELLS_PER_FRAME: Final = 1
+"""One point a frame: ~6 KB a read for nine columns, for 15 % more than 8 points a frame."""
 LATS: Final[FloatArray] = np.arange(721, dtype=np.float64) * STEP - 90
 LONS: Final[FloatArray] = np.arange(1440, dtype=np.float64) * STEP - 180
 EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
@@ -186,18 +200,20 @@ class HttpBucket:
 
 @dataclass(frozen=True, slots=True)
 class Era5Job:
-    """One asset: France's daily weather over consecutive months of a year."""
+    """One asset: a domain's daily weather over consecutive months of a year."""
 
     year: int
     months: tuple[int, ...] = ALL_MONTHS
+    domain: Domain = Domain.FRANCE
 
     def __post_init__(self) -> None:
         check_months(self.months)
 
     @property
     def asset_name(self) -> str:
-        """Such as `era5-2021.parquet`, or `era5-2021-01.parquet` for January alone."""
-        return f"era5-{self.year}{span(self.months)}.parquet"
+        """Such as `era5-2021.parquet`, `era5-2021-01.parquet` for January alone, or
+        `era5-2021.cells` over the whole domain."""
+        return f"era5-{self.year}{span(self.months)}{self.domain.suffix}"
 
     @property
     def first_day(self) -> date:
@@ -215,8 +231,10 @@ def last_complete_year(today: date) -> int:
     return today.year - 1 if today >= date(today.year, 1, 10) else today.year - 2
 
 
-def missing_years(years: Sequence[int], built: set[str]) -> list[Era5Job]:
-    return [job for year in years if (job := Era5Job(year)).asset_name not in built]
+def missing_years(
+    years: Sequence[int], built: set[str], domain: Domain = Domain.FRANCE
+) -> list[Era5Job]:
+    return [job for year in years if (job := Era5Job(year, domain=domain)).asset_name not in built]
 
 
 async def hourly(
@@ -324,49 +342,73 @@ def daily_weather(values: Mapping[Hourly, FloatArray]) -> dict[Daily, FloatArray
     }
 
 
-async def build(job: Era5Job, out_dir: Path, bucket: Bucket, *, box: Box = FRANCE) -> Path:
-    """Build `job`'s asset in `out_dir`; returns its path."""
+async def build(
+    job: Era5Job,
+    out_dir: Path,
+    bucket: Bucket,
+    *,
+    box: Box | None = None,
+    band_rows: int = BAND_ROWS,
+) -> Path:
+    """Build `job`'s asset in `out_dir`; returns its path. `box` is the job's domain's unless
+    given."""
+    box = job.domain.box if box is None else box
+    if band_rows < 1:
+        raise ValueError(f"bands of {band_rows} rows hold nothing")
     half = STEP / 2
-    cells = box_cells(
+    points = box_cells(
         LATS, LONS, Box(box.south - half, box.north + half, box.west - half, box.east + half)
     )
-    rows = slice(int(cells.lat_index[0]), int(cells.lat_index[-1]) + 1)
-    cols = slice(int(cells.lon_index[0]), int(cells.lon_index[-1]) + 1)
+    first_row, last_row = int(points.lat_index[0]), int(points.lat_index[-1]) + 1
+    cols = slice(int(points.lon_index[0]), int(points.lon_index[-1]) + 1)
     started = time.monotonic()
-    read = await asyncio.gather(*(hourly(bucket, v, job, rows, cols) for v in Hourly))
+    bands: list[dict[Daily, FloatArray]] = []
+    for start in range(first_row, last_row, band_rows):
+        rows = slice(start, min(start + band_rows, last_row))
+        read = await asyncio.gather(*(hourly(bucket, v, job, rows, cols) for v in Hourly))
+        bands.append(daily_weather(dict(zip(Hourly, read, strict=True))))
     logger.info("era5 %s: read in %.0f s", job.asset_name, time.monotonic() - started)
-    columns = daily_weather(dict(zip(Hourly, read, strict=True)))
+    columns = {c: np.concatenate([band[c] for band in bands], axis=1) for c in Daily}
 
-    table = to_table(
-        cells.lats,
-        cells.lons,
-        job.first_day,
-        {column.value: values for column, values in columns.items()},
-        metadata=_metadata(box),
-    )
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / job.asset_name
-    pq.write_table(table, path, compression="zstd")
-    logger.info("%s: %d rows, %.1f MB", path.name, table.num_rows, path.stat().st_size / 1e6)
+    metadata = _metadata(box, job.domain)
+    if job.domain is Domain.FRANCE:
+        named = {column.value: values for column, values in columns.items()}
+        table = to_table(points.lats, points.lons, job.first_day, named, metadata=metadata)
+        pq.write_table(table, path, compression="zstd")
+    else:
+        cells.write(
+            path,
+            points.lats,
+            points.lons,
+            job.first_day,
+            [columns[c] for c in Daily],
+            metadata=metadata,
+            cells_per_frame=CELLS_PER_FRAME,
+        )
+    megabytes = path.stat().st_size / 1e6
+    logger.info(
+        "%s: %d by %d points, %.1f MB", path.name, points.lats.size, points.lons.size, megabytes
+    )
     return path
 
 
-def compare(asset: Path, places: Sequence[Place] = PLACES, get: Get = http_get) -> list[Comparison]:
-    """The asset against Open-Meteo's archive API at each place, over the asset's days."""
+def compare(
+    asset: Path, places: Sequence[Place] | None = None, get: Get = http_get
+) -> list[Comparison]:
+    """The asset against Open-Meteo's archive API at each place (the domain's own places unless
+    given), over the asset's days."""
     if read_metadata(asset).get("source") != "era5":
         raise ValueError(f"{asset.name} is not an ERA5 asset")
-    table = pq.read_table(asset)
-    lats = np.unique(table["lat"].to_numpy())
-    lons = np.unique(table["lon"].to_numpy())
-    first_day: date = table["day"][0].as_py()
-    days = len(np.unique(table["day"].to_numpy()))
-    last_day = first_day + timedelta(days=days - 1)
+    whole_domain = asset.suffix == Domain.EUROPE.suffix
+    first_day, last_day, days_at = (_cells_days if whole_domain else _table_days)(asset)
+    if places is None:
+        places = EUROPE_PLACES if whole_domain else PLACES
 
     comparisons: list[Comparison] = []
     for place in places:
-        cell = (float(lats[nearest(lats, place.lat)]), float(lons[nearest(lons, place.lon)]))
-        mask = (table["lat"].to_numpy() == cell[0]) & (table["lon"].to_numpy() == cell[1])
-        rows = table.filter(mask).sort_by("day")
+        cell, rows = days_at(place)
         api = archive_api(place, first_day, last_day, get)
         for column in Daily:
             if column is Daily.BOUNDARY_LAYER_HEIGHT:
@@ -384,7 +426,7 @@ def compare(asset: Path, places: Sequence[Place] = PLACES, get: Get = http_get) 
                     place,
                     cell,
                     column.value,
-                    floats(rows[column.value]),
+                    rows[column.value],
                     reference,
                     allowed,
                     offset=column is Daily.TEMPERATURE,
@@ -395,6 +437,35 @@ def compare(asset: Path, places: Sequence[Place] = PLACES, get: Get = http_get) 
                 )
             )
     return comparisons
+
+
+def _table_days(asset: Path) -> tuple[date, date, DaysAt]:
+    table = pq.read_table(asset)
+    lats = np.unique(table["lat"].to_numpy())
+    lons = np.unique(table["lon"].to_numpy())
+    first_day: date = table["day"][0].as_py()
+    days = len(np.unique(table["day"].to_numpy()))
+
+    def days_at(place: Place) -> tuple[tuple[float, float], Mapping[str, FloatArray]]:
+        cell = (float(lats[nearest(lats, place.lat)]), float(lons[nearest(lons, place.lon)]))
+        mask = (table["lat"].to_numpy() == cell[0]) & (table["lon"].to_numpy() == cell[1])
+        rows = table.filter(mask).sort_by("day")
+        return cell, {c.value: floats(rows[c.value]) for c in Daily}
+
+    return first_day, first_day + timedelta(days=days - 1), days_at
+
+
+def _cells_days(asset: Path) -> tuple[date, date, DaysAt]:
+    header = cells.read_header(asset)
+    lats, lons = header.lats, header.lons
+
+    def days_at(place: Place) -> tuple[tuple[float, float], Mapping[str, FloatArray]]:
+        row, column = nearest(lats, place.lat), nearest(lons, place.lon)
+        values = cells.to_values(cells.read_cell(asset, row, column), header.scale)
+        named = {c.value: values[i] for i, c in enumerate(Daily)}
+        return (float(lats[row]), float(lons[column])), named
+
+    return header.first_day, header.first_day + timedelta(days=header.days - 1), days_at
 
 
 def archive_api(
@@ -439,9 +510,10 @@ def _hour(day: date) -> int:
     return (datetime(day.year, day.month, day.day, tzinfo=UTC) - EPOCH) // timedelta(hours=1)
 
 
-def _metadata(box: Box) -> dict[str, Any]:
+def _metadata(box: Box, domain: Domain) -> dict[str, Any]:
     return {
         "source": "era5",
+        "domain": domain.value,
         "columns": [c.value for c in Daily],
         "units": {c.value: unit for c, unit in UNITS.items()},
         "days": "UTC",

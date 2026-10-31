@@ -97,13 +97,13 @@ def _era5_plan(args: argparse.Namespace) -> int:
     last = era5.last_complete_year(date.today())
     years = plan.parse_years(args.years)
     wanted = sorted(y for y in (years or range(era5.FIRST_YEAR, last + 1)) if y <= last)
-    jobs = era5.missing_years(wanted, built)
+    jobs = era5.missing_years(wanted, built, Domain(args.domain))
     print(json.dumps([{"asset": job.asset_name, "year": job.year} for job in jobs]))
     return 0
 
 
 def _era5_build(args: argparse.Namespace) -> int:
-    job = era5.Era5Job(year=args.year, months=_months(args.months))
+    job = era5.Era5Job(year=args.year, months=_months(args.months), domain=Domain(args.domain))
     path = asyncio.run(_era5_build_with_bucket(job, Path(args.out)))
     print(path)
     return 0
@@ -123,7 +123,12 @@ def _mirror(args: argparse.Namespace) -> int:
     card = Path(args.card).read_bytes()
     with tempfile.TemporaryDirectory(dir=args.workdir) as workdir:
         done = mirror.sync(
-            mirror.HubApi(token), release, card, Path(workdir), mirror.download_asset
+            mirror.HubApi(token),
+            release,
+            card,
+            Path(workdir),
+            mirror.download_asset,
+            folder=args.folder,
         )
     print(
         f"{len(release)} assets in the release: {len(done.upload)} uploaded, "
@@ -183,11 +188,13 @@ def _parser() -> argparse.ArgumentParser:
     era5_planning = commands.add_parser("era5-plan", help="print the ERA5 years still missing")
     era5_planning.add_argument("--years", default="all", help="`all`, a year, or a span")
     era5_planning.add_argument("--built", help="a file listing the assets already built")
+    era5_planning.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
     era5_planning.set_defaults(run=_era5_plan)
 
     era5_building = commands.add_parser("era5-build", help="build one ERA5 year from the bucket")
     era5_building.add_argument("--year", required=True, type=int)
     era5_building.add_argument("--months", default="all", help="`all`, a month, or a span: 2-5")
+    era5_building.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
     era5_building.add_argument("--out", default="dist", help="where the asset is written")
     era5_building.set_defaults(run=_era5_build)
 
@@ -196,6 +203,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     mirroring.add_argument("--release", required=True, help="the release's JSON, from GitHub's API")
     mirroring.add_argument("--card", required=True, help="the dataset card to keep on the mirror")
+    mirroring.add_argument("--folder", default=mirror.FOLDER, help="the release's folder there")
     mirroring.add_argument("--workdir", help="where each batch of assets is downloaded")
     mirroring.set_defaults(run=_mirror)
     return parser

@@ -32,8 +32,10 @@ class FakeHub:
         self.mirrored = list(files)
         self.card = card
         self.commits: list[tuple[dict[str, bytes], list[str], str]] = []
+        self.folders: list[str] = []
 
-    def files(self) -> tuple[list[Asset], str | None]:
+    def files(self, folder: str) -> tuple[list[Asset], str | None]:
+        self.folders.append(folder)
         return self.mirrored, self.card
 
     def commit(
@@ -192,7 +194,7 @@ def test_the_hub_lists_the_folder_and_commits_through_huggingface_hub(
     path = tmp_path / "a.cells"
     path.write_bytes(b"abc")
 
-    files, card = hub.files()
+    files, card = hub.files("cams-europe-v1")
     hub.commit({"README.md": CARD, "cams-europe-v1/a.cells": path}, ["cams-europe-v1/b.cells"], "m")
 
     assert files == [Asset("a.cells", 3, "abc")]
@@ -226,7 +228,10 @@ def test_mirror_syncs_the_release_with_the_hub(
     card.write_bytes(CARD)
     synced: list[tuple[list[Asset], bytes]] = []
 
-    def sync(_hub: object, assets: list[Asset], content: bytes, *_: object) -> mirror.Plan:
+    def sync(
+        _hub: object, assets: list[Asset], content: bytes, *_: object, folder: str
+    ) -> mirror.Plan:
+        assert folder == "cams-europe-v1"
         synced.append((assets, content))
         return mirror.Plan(upload=tuple(assets), delete=(), card=True)
 
@@ -242,3 +247,14 @@ def test_mirror_syncs_the_release_with_the_hub(
         "1 assets in the release: 1 uploaded, 0 deleted, the card written"
         in capsys.readouterr().out
     )
+
+
+def test_each_release_has_its_folder(tmp_path: Path) -> None:
+    hub = FakeHub([], git_blob_id(CARD))
+
+    mirror.sync(hub, RELEASE[:1], CARD, tmp_path, _download, folder="era5-europe-v1")
+
+    assert hub.folders == ["era5-europe-v1"]
+    ((uploads, _, message),) = hub.commits
+    assert list(uploads) == ["era5-europe-v1/cams-pm10-2021-validated.cells"]
+    assert message.startswith("Mirror era5-europe-v1:")

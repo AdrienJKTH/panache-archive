@@ -144,8 +144,10 @@ def write(
     columns: Sequence[FloatArray],
     *,
     metadata: Mapping[str, Any],
+    cells_per_frame: int = CELLS_PER_FRAME,
 ) -> None:
-    """Write `columns`, `(days, lat, lon)` arrays of the statistics in order, NaN where missing."""
+    """Write `columns`, `(days, lat, lon)` arrays of the statistics in order, NaN where missing;
+    `cells_per_frame` cells of a row to a frame."""
     shapes = {values.shape for values in columns}
     if not columns or len(shapes) != 1 or next(iter(shapes))[1:] != (lats.size, lons.size):
         raise ValueError(f"columns {shapes} do not match {lats.size} x {lons.size} cells")
@@ -157,7 +159,7 @@ def write(
     )
     header = Header(
         statistics=len(columns),
-        cells_per_frame=CELLS_PER_FRAME,
+        cells_per_frame=cells_per_frame,
         first_lat=float(lats[0]),
         first_lon=float(lons[0]),
         step=step,

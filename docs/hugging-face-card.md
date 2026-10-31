@@ -15,7 +15,9 @@ tags:
 
 Daily air quality over the whole CAMS Europe domain (30 to 72° N, 25° W to 45° E, 0.1° cells) from 2013, summed up from the hourly **CAMS European air quality reanalyses**. It is built for [Panache](https://github.com/AdrienJKTH/panache-archive), a tool that explains pollution episodes at a place: was a day unusual, and why?
 
-This dataset is a **mirror** of the GitHub release [`cams-europe-v1`](https://github.com/AdrienJKTH/panache-archive/releases/tag/cams-europe-v1) of [AdrienJKTH/panache-archive](https://github.com/AdrienJKTH/panache-archive), where the assets are built on GitHub Actions and checked. Its files are the very same: the folder `cams-europe-v1/`.
+This dataset is a **mirror** of two GitHub releases of [AdrienJKTH/panache-archive](https://github.com/AdrienJKTH/panache-archive), where the assets are built on GitHub Actions and checked. Its files are the very same, one folder per release:
+- [`cams-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/cams-europe-v1): air quality, described below;
+- [`era5-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/era5-europe-v1): the daily weather of ERA5 over the same domain at 0.25° (169 by 281 points), one file per year such as `era5-2021.cells`, nine statistics in this order: `temperature_2m_mean` (°C, the grid's, not corrected for altitude), `relative_humidity_2m_mean` (%), `wind_speed_10m_mean` (m/s), `wind_direction_10m_dominant` (°), `pressure_msl_mean` (hPa), `precipitation_sum` (mm, the 24 hours ending in the day), `shortwave_radiation_sum` (MJ/m²), `cloud_cover_mean` (%) and `boundary_layer_height` (m). One point a frame. Built from Open-Meteo's public copy of ERA5 (DOI [10.24381/cds.adbb2d47](https://doi.org/10.24381/cds.adbb2d47)); weather data by [Open-Meteo.com](https://open-meteo.com/) (CC-BY 4.0).
 
 ## What it holds
 
@@ -88,4 +90,4 @@ Each asset is checked two ways before it is published:
 
 ## Licence and attribution
 
-CC-BY 4.0, as the source. Contains modified Copernicus Atmosphere Monitoring Service information [2026]. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains. Source: CAMS European air quality reanalyses, DOI [10.24381/7cc0465a](https://doi.org/10.24381/7cc0465a).
+CC-BY 4.0, as the sources. Contains modified Copernicus Atmosphere Monitoring Service and Copernicus Climate Change Service information [2026]. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains. Source: CAMS European air quality reanalyses, DOI [10.24381/7cc0465a](https://doi.org/10.24381/7cc0465a).
