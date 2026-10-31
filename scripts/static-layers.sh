@@ -14,11 +14,13 @@ mkdir -p "$work"
 west=-5.5 south=41.0 east=10.0 north=51.5
 cols=1860 rows=1260
 
+# GHSL's 30" grid lies ~0.05 pixel off whole multiples of 1/120°: its counts (residents, built-up
+# m²) are summed onto the box's own grid, which keeps their totals.
 jrc=https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL
 cut_ghsl() {  # folder, file stem, output name
   curl -fsSL --retry 4 -o "$work/$2.zip" "$jrc/$1/$2.zip"
-  gdal_translate -q -projwin "$west" "$north" "$east" "$south" -co COMPRESS=NONE \
-    "/vsizip/$work/$2.zip/$2.tif" "$work/$3.tif"
+  gdalwarp -q -te "$west" "$south" "$east" "$north" -ts "$cols" "$rows" -r sum -ot Float32 \
+    -co COMPRESS=NONE "/vsizip/$work/$2.zip/$2.tif" "$work/$3.tif"
   rm "$work/$2.zip"
 }
 cut_ghsl GHS_POP_GLOBE_R2023A/GHS_POP_E2020_GLOBE_R2023A_4326_30ss/V1-0 \
