@@ -27,6 +27,7 @@ from panache_archive import web
 
 REPO_ID: Final = "adrien4916/air_qual_indicators"
 FOLDER: Final = "cams-europe-v1"
+"""The first release mirrored; each release has a folder of its name (`era5-europe-v1`)."""
 CARD: Final = "README.md"
 BATCH_BYTES: Final = 4_000_000_000
 """What a batch downloads at most: ~10 assets, well within a runner's disk."""
@@ -60,7 +61,7 @@ class Plan:
 class Hub(Protocol):
     """What the mirror needs of Hugging Face (`HubApi`, or a fake)."""
 
-    def files(self) -> tuple[list[Asset], str | None]:
+    def files(self, folder: str) -> tuple[list[Asset], str | None]:
         """The folder's files, and the card's git blob id (`None` without a card)."""
         ...
 
@@ -120,16 +121,21 @@ def batches(assets: Sequence[Asset], limit: int = BATCH_BYTES) -> list[list[Asse
 
 
 def sync(
-    hub: Hub, release: Sequence[Asset], card: bytes, workdir: Path, download: Download
+    hub: Hub,
+    release: Sequence[Asset],
+    card: bytes,
+    workdir: Path,
+    download: Download,
+    folder: str = FOLDER,
 ) -> Plan:
-    """Bring the mirror in line with `release`; returns what was done."""
-    mirrored, card_blob = hub.files()
+    """Bring the mirror's `folder` in line with `release`, and its card; returns what was done."""
+    mirrored, card_blob = hub.files(folder)
     todo = plan(release, mirrored, card, card_blob)
     if todo.card or todo.delete:
         hub.commit(
             {CARD: card} if todo.card else {},
-            [f"{FOLDER}/{name}" for name in todo.delete],
-            f"Mirror {FOLDER}: the card, and {len(todo.delete)} assets the release dropped",
+            [f"{folder}/{name}" for name in todo.delete],
+            f"Mirror {folder}: the card, and {len(todo.delete)} assets the release dropped",
         )
     workdir.mkdir(parents=True, exist_ok=True)
     for group in batches(todo.upload):
@@ -139,8 +145,8 @@ def sync(
             download(asset, target)
             if asset.sha256 is not None and _sha256(target) != asset.sha256:
                 raise ValueError(f"{asset.name} was not downloaded whole")
-            paths[f"{FOLDER}/{asset.name}"] = target
-        hub.commit(paths, [], f"Mirror {FOLDER}: {', '.join(a.name for a in group)}")
+            paths[f"{folder}/{asset.name}"] = target
+        hub.commit(paths, [], f"Mirror {folder}: {', '.join(a.name for a in group)}")
         for path in paths.values():
             if isinstance(path, Path):
                 path.unlink()
@@ -169,13 +175,13 @@ class HubApi:
         self._api = HfApi(token=token)
         self._repo_id = repo_id
 
-    def files(self) -> tuple[list[Asset], str | None]:
+    def files(self, folder: str) -> tuple[list[Asset], str | None]:
         entries = list(self._api.list_repo_tree(self._repo_id, repo_type="dataset", recursive=True))
         files = [e for e in entries if isinstance(e, RepoFile)]
         mirrored = [
-            Asset(e.path.removeprefix(f"{FOLDER}/"), e.size, e.lfs.sha256 if e.lfs else None)
+            Asset(e.path.removeprefix(f"{folder}/"), e.size, e.lfs.sha256 if e.lfs else None)
             for e in files
-            if e.path.startswith(f"{FOLDER}/")
+            if e.path.startswith(f"{folder}/")
         ]
         card = next((e.blob_id for e in files if e.path == CARD), None)
         return mirrored, card

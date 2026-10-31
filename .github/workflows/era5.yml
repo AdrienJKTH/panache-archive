@@ -1,14 +1,23 @@
 name: ERA5
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && format('ERA5 {0}', inputs.domain)
+  || github.event.pull_request.title }}
 
-# Builds the archive's ERA5 assets: France's daily weather for each year, read from Open-Meteo's
+# Builds the archive's ERA5 assets: a domain's daily weather for each year, read from Open-Meteo's
 # public bucket over HTTPS (no account, no quota; ~20 MB of compressed hours per variable and
-# year), published to the release era5-v1 and checked against Open-Meteo's archive API. A run
-# builds only the years the release lacks. Labelling a pull request `pilot-era5` tries its code
-# on January 2021 first.
+# year for France, ~17 times that for the whole domain), published to the domain's release
+# (era5-v1, or era5-europe-v1 for the whole domain) and checked against Open-Meteo's archive API,
+# and the whole domain's against France's assets too. A run builds only the years the release
+# lacks. Labelling a pull request `pilot-era5` tries its code on January 2021 first.
 
 on:
   workflow_dispatch:
     inputs:
+      domain:
+        description: "`france` (Parquet, era5-v1) or `europe`, the whole domain (era5-europe-v1)"
+        type: choice
+        options: [france, europe]
+        default: france
       years:
         description: "`all` (2013 to the last complete year), a year, or a span such as 2013-2025"
         default: all
@@ -16,14 +25,21 @@ on:
     types: [labeled]
 
 concurrency:
-  group: era5-${{ github.event_name == 'workflow_dispatch' && 'build' || github.ref }}
+  group: >-
+    era5-${{ github.event_name == 'workflow_dispatch' && format('build-{0}', inputs.domain)
+    || github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 env:
-  RELEASE: era5-v1
+  DOMAIN: ${{ inputs.domain || 'france' }}
+  RELEASE: ${{ inputs.domain == 'europe' && 'era5-europe-v1' || 'era5-v1' }}
+  NOTES: ${{ inputs.domain == 'europe' && 'docs/era5-europe-release.md' || 'docs/era5-release.md' }}
+  TITLE: >-
+    ${{ inputs.domain == 'europe' && 'ERA5 daily weather over the whole domain'
+    || 'ERA5 daily weather over France' }}
 
 jobs:
   plan:
@@ -46,8 +62,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release view "$RELEASE" > /dev/null 2>&1
-          || gh release create "$RELEASE" --title "ERA5 daily weather over France"
-          --notes-file docs/era5-release.md
+          || gh release create "$RELEASE" --title "$TITLE" --notes-file "$NOTES"
       - name: List the assets already built
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,7 +72,8 @@ jobs:
         env:
           YEARS: ${{ inputs.years }}
         run: |
-          matrix=$(uv run panache-archive era5-plan --years "$YEARS" --built built.txt)
+          matrix=$(uv run panache-archive era5-plan --years "$YEARS" --built built.txt \
+            --domain "$DOMAIN")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq -r '"\(length) years to build"' >> "$GITHUB_STEP_SUMMARY"
 
@@ -66,7 +82,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.matrix != '[]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     permissions:
       contents: write
     strategy:
@@ -84,19 +100,30 @@ jobs:
       - name: Build
         env:
           YEAR: ${{ matrix.year }}
-        run: uv run panache-archive era5-build --year "$YEAR" --out dist
+        run: uv run panache-archive era5-build --year "$YEAR" --domain "$DOMAIN" --out dist
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE" dist/*.parquet --clobber
+        run: gh release upload "$RELEASE" dist/era5-* --clobber
+      - name: Fetch France's twin
+        # The whole domain's asset must hold France's very numbers (`check --twins`).
+        if: env.DOMAIN == 'europe'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ matrix.asset }}
+        run: >
+          gh release download era5-v1 --pattern "${ASSET%.cells}.parquet" --dir twins
+          || echo "France has no twin of $ASSET"
       - name: Check against Open-Meteo
-        run: uv run panache-archive check dist/*.parquet --summary "$GITHUB_STEP_SUMMARY"
+        run: >
+          uv run panache-archive check dist/era5-* --twins twins
+          --summary "$GITHUB_STEP_SUMMARY"
 
   pilot:
     name: Pilot, January 2021
     if: github.event_name == 'pull_request' && github.event.label.name == 'pilot-era5'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -104,14 +131,25 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --locked
-      - name: Build January 2021
+      - name: Build January 2021, over France and the whole domain
         run: |
-          uv run panache-archive era5-build --year 2021 --months 1 --out dist
-          { echo '| Asset | Size |'; echo '|---|---|'
-            du -h dist/*.parquet | awk '{ sub("dist/", "", $2); print "| " $2 " | " $1 " |" }'
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          { echo '| Asset | Wall time | Peak memory |'; echo '|---|---|---|'; } > builds.md
+          for domain in france europe; do
+            /usr/bin/time -f "%e %M" -o took.txt uv run panache-archive era5-build \
+              --year 2021 --months 1 --domain "$domain" --out dist > built.txt
+            read -r seconds kilobytes < took.txt
+            echo "| $(basename "$(cat built.txt)") | ${seconds} s | $((kilobytes / 1024)) MB |" \
+              >> builds.md
+          done
+          cat builds.md
+          { cat builds.md; echo; echo '| Asset | Size |'; echo '|---|---|'
+            du -h dist/era5-* | awk '{ sub("dist/", "", $2); print "| " $2 " | " $1 " |" }'
             echo; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Check against Open-Meteo
-        run: uv run panache-archive check dist/*.parquet --summary "$GITHUB_STEP_SUMMARY"
+      - name: Check against Open-Meteo and France's asset
+        run: >
+          uv run panache-archive check dist/era5-* --twins dist
+          --summary "$GITHUB_STEP_SUMMARY"
       - name: Keep the asset
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

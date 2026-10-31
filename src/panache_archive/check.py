@@ -197,7 +197,8 @@ class TwinComparison:
 def compare_twin(asset: Path, twin: Path) -> TwinComparison:
     """`asset` (`.cells`) against `twin` (France's Parquet): the very same float32 numbers."""
     header = cells.read_header(asset)
-    names: list[str] = read_metadata(asset)["statistics"]
+    metadata = read_metadata(asset)
+    names: list[str] = metadata.get("statistics") or metadata["columns"]  # CAMS's, or ERA5's
     table = pq.read_table(twin)
     lats = np.unique(table["lat"].to_numpy())
     lons = np.unique(table["lon"].to_numpy())
