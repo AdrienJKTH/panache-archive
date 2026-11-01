@@ -68,11 +68,6 @@ CHUNK_HOURS: Final = 504
 HUMIDITY_CORRELATION: Final = 0.99
 """The API's humidity comes from altitude-corrected temperature and dew point, which no daily
 offset undoes: it is checked by correlation."""
-PRECIPITATION_CORRELATION: Final = 0.98
-"""Since October 2026 the API sums a day's rain over the hours stamped 00:00 to 23:00 UTC, while
-the archive keeps the 24 hours ending in the day, 01:00 to 24:00 (Panache's D62): a day can differ
-by an hour of rain, so the rain is checked by correlation (r was 0.989 to 0.999 at nine places in
-January 2021)."""
 STEP: Final = 0.25
 BAND_ROWS: Final = 24
 """Latitudes read at a time: a year of one variable over 24 rows of the whole domain is ~0.5 GB
@@ -133,6 +128,15 @@ class Daily(StrEnum):
 
 ACCUMULATED: Final = frozenset({Hourly.PRECIPITATION, Hourly.RADIATION})
 """Totals or means over the hour before their time stamp."""
+FROM_API_HOURS: Final[Mapping[Daily, Hourly]] = {
+    Daily.PRECIPITATION: Hourly.PRECIPITATION,
+    Daily.BOUNDARY_LAYER_HEIGHT: Hourly.BOUNDARY_LAYER_HEIGHT,
+}
+"""The columns checked against the archive API's hours rather than its days. Since October 2026
+the API sums a day's rain over the hours stamped 00:00 to 23:00 UTC, while the archive keeps the
+24 hours ending in the day, 01:00 to 24:00 (Panache's D62): a storm in a day's last hour moves to
+the next day (15.5 mm at Warsaw on 13 August 2014). So the check sums the API's hours over the
+archive's window."""
 
 UNITS: Final[Mapping[Daily, str]] = {
     Daily.TEMPERATURE: "°C",
@@ -145,10 +149,7 @@ UNITS: Final[Mapping[Daily, str]] = {
     Daily.CLOUD_COVER: "%",
     Daily.BOUNDARY_LAYER_HEIGHT: "m",
 }
-CORRELATED: Final = {
-    Daily.RELATIVE_HUMIDITY: HUMIDITY_CORRELATION,
-    Daily.PRECIPITATION: PRECIPITATION_CORRELATION,
-}
+CORRELATED: Final = {Daily.RELATIVE_HUMIDITY: HUMIDITY_CORRELATION}
 """The columns judged by correlation instead of by difference."""
 
 
@@ -421,9 +422,10 @@ def compare(
         cell, rows = days_at(place)
         api = archive_api(place, first_day, last_day, get)
         for column in Daily:
-            if column is Daily.BOUNDARY_LAYER_HEIGHT:
+            if column in FROM_API_HOURS:
                 hours = api[column]
-                reference, step = daily_means(hours), rounding_step(hours)
+                daily = daily_sums if column is Daily.PRECIPITATION else daily_means
+                reference, step = daily(hours), rounding_step(hours)
             else:
                 reference = api[column]
                 step = rounding_step(reference)
@@ -479,36 +481,40 @@ def _cells_days(asset: Path) -> tuple[date, date, DaysAt]:
 def archive_api(
     place: Place, first_day: date, last_day: date, get: Get = http_get
 ) -> dict[Daily, FloatArray]:
-    """The archive API's ERA5 days at `place`, as Panache asks for them; the boundary layer is
-    hourly."""
-    daily = [c.value for c in Daily if c is not Daily.BOUNDARY_LAYER_HEIGHT]
+    """The archive API's ERA5 days at `place`, as Panache asks for them, except the columns of
+    `FROM_API_HOURS`: their hours, over the archive's window of each day (the rain's 01:00 to
+    24:00, hence a day more asked for)."""
+    daily = [c.value for c in Daily if c not in FROM_API_HOURS]
     query = urllib.parse.urlencode(
         {
             "latitude": place.lat,
             "longitude": place.lon,
             "start_date": first_day.isoformat(),
-            "end_date": last_day.isoformat(),
+            "end_date": (last_day + timedelta(days=1)).isoformat(),
             "models": "era5",
             "wind_speed_unit": "ms",
             "timezone": "GMT",
             "daily": ",".join(daily),
-            "hourly": Daily.BOUNDARY_LAYER_HEIGHT.value,
+            "hourly": ",".join(hourly.value for hourly in FROM_API_HOURS.values()),
         }
     )
     answer = json.loads(get(f"{ARCHIVE_URL}?{query}"))
     days = (last_day - first_day).days + 1
     series: dict[Daily, FloatArray] = {}
     for column in Daily:
-        hourly_column = column is Daily.BOUNDARY_LAYER_HEIGHT
-        block, units = ("hourly", "hourly_units") if hourly_column else ("daily", "daily_units")
-        if answer[units][column.value] != UNITS[column]:
-            raise ValueError(f"{column} is in {answer[units][column.value]}, not {UNITS[column]}")
-        values = answer[block][column.value]
-        expected = days * HOURS_PER_DAY if hourly_column else days
-        if len(values) != expected:
+        hourly = FROM_API_HOURS.get(column)
+        name = column.value if hourly is None else hourly.value
+        block, units = ("daily", "daily_units") if hourly is None else ("hourly", "hourly_units")
+        if answer[units][name] != UNITS[column]:
+            raise ValueError(f"{column} is in {answer[units][name]}, not {UNITS[column]}")
+        values = answer[block][name]
+        per_day = 1 if hourly is None else HOURS_PER_DAY
+        if len(values) != (days + 1) * per_day:
             raise ValueError(f"Open-Meteo answered {len(values)} values of {column}")
+        first = 1 if hourly in ACCUMULATED else 0
         series[column] = np.array(
-            [np.nan if v is None else float(v) for v in values], dtype=np.float64
+            [np.nan if v is None else float(v) for v in values[first : first + days * per_day]],
+            dtype=np.float64,
         )
     return series
 
