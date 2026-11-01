@@ -61,6 +61,10 @@ from panache_archive.domain import Domain
 from panache_archive.grid import Box, FloatArray, box_cells, nearest
 
 BASE_URL: Final = "https://openmeteo.s3.amazonaws.com/data/copernicus_era5"
+META_URL: Final = f"{BASE_URL}/static/meta.json"
+"""Open-Meteo's description of the bucket's ERA5, rewritten each day: its `data_end_time`, in
+Unix seconds, is where the hours stop, about five days back (ERA5T, ERA5's first release, for
+the last months)."""
 ARCHIVE_URL: Final = "https://archive-api.open-meteo.com/v1/archive"
 FIRST_YEAR: Final = 2013
 """The archive's first year, as CAMS's."""
@@ -237,15 +241,50 @@ class Era5Job:
         return (end - self.first_day).days
 
 
-def last_complete_year(today: date) -> int:
-    """The latest year ERA5 covers whole: it runs about five days behind."""
-    return today.year - 1 if today >= date(today.year, 1, 10) else today.year - 2
+def data_end(get: Get = http_get) -> datetime:
+    """Where the bucket's hours stop, from its `meta.json`."""
+    meta = json.loads(get(META_URL))
+    return datetime.fromtimestamp(int(meta["data_end_time"]), tz=UTC)
 
 
-def missing_years(
-    years: Sequence[int], built: set[str], domain: Domain = Domain.FRANCE
-) -> list[Era5Job]:
-    return [job for year in years if (job := Era5Job(year, domain=domain)).asset_name not in built]
+def months_out(year: int, end: datetime) -> int:
+    """How many months of `year` the bucket holds whole, 0 to 12, given where its hours stop. A
+    month's last day needs the first hour of the next month, for its rain (the 24 hours ending
+    in the day), and a day more is waited for, since `meta.json` does not say whether its end is
+    the last hour or the one after."""
+    months = 0
+    for month in range(1, 13):
+        following = datetime(year + month // 12, month % 12 + 1, 1, tzinfo=UTC)
+        if end < following + timedelta(days=1):
+            break
+        months = month
+    return months
+
+
+def plan(
+    years: Sequence[int], built: set[str], end: datetime, domain: Domain = Domain.FRANCE
+) -> tuple[list[Era5Job], list[str]]:
+    """The jobs the release lacks, and the assets they supersede, given where the bucket's hours
+    stop. France's archive, downloaded whole, takes whole years only. The whole domain's, read
+    from afar, takes the year under way too, as its months out so far, which replace its
+    earlier part (Panache's D75)."""
+    jobs: list[Era5Job] = []
+    superseded: list[str] = []
+    for year in years:
+        months = months_out(year, end)
+        if months == 0 or (months < 12 and domain is Domain.FRANCE):
+            continue
+        job = Era5Job(year, tuple(range(1, months + 1)), domain)
+        if job.asset_name not in built:
+            jobs.append(job)
+        superseded += sorted(
+            name
+            for name in built
+            if name.startswith(f"era5-{year}-")
+            and name.endswith(domain.suffix)
+            and name != job.asset_name
+        )
+    return jobs, superseded
 
 
 async def hourly(
