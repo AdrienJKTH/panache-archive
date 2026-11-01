@@ -133,6 +133,18 @@ What Panache's downscaling of CAMS to 1 km over France learns from and maps with
 - `stations-fr-<pollutant>.parquet` (`pm2_5`, `nitrogen_dioxide`): one row per sampling point and UTC day with at least 18 valid hours (`sampling_point`, `day`, `mean` in µg/m³, `hours`), from the EEA's validated hours (E1a), 2013 to the last complete year. The files' hours are UTC+1. Each point's station, position, altitude, type and area, from the EEA's metadata, are in the asset's `panache_archive` metadata (`points`).
 - `static-fr-1km.npz`: `population` (inhabitants/km², GHS-POP 2020), `built_up` (share of the cell, GHS-BUILT-S 2020) and `elevation` (m, Copernicus DEM GLO-90 averaged; 0 or NaN at sea) and `land` (share of the cell on land, Natural Earth 1:10m land without its lakes) on a 1/120° grid over France's box (1,260 by 1,860 cells, twelve by twelve per CAMS cell, rows from the south), with `lats`, `lons` and `about` (JSON). GDAL cuts the sources onto the grid (`scripts/static-layers.sh`).
 
+## Downscaled maps
+
+Daily means of PM2.5 and NO₂ at 1 km over the land of France's box, 2013 to the last complete year (Panache's D74), in the release `downscaled-v1`: one `downscaled-<pollutant>-<year>.days` file per pollutant and year (~1 MB a day, read a day at a time over HTTP ranges), and the two models (`downscaling-<pollutant>.lgb.txt`).
+
+- **Built by Panache's own backend** (`panache-downscaling-maps`, installed from the commit the run is given): each pollutant's model is trained once on the EEA's background stations (release `downscaling-v1`), then each year's days are predicted cell by cell from the archive's CAMS (`cams-v1`), ERA5 (`era5-v1`) and the 1 km fixed layers, ~25 s a day.
+- The [`Downscaled maps`](.github/workflows/downscaled.yml) workflow builds the pollutant-years the release lacks, one job each; with `days`, a pilot builds each year's first days as the run's artifacts.
+
+```bash
+gh workflow run downscaled.yml -f panache=main -f years=2021 -f days=3
+gh workflow run downscaled.yml -f panache=main -f years=all
+```
+
 ## Development
 
 Python 3.12 with [uv](https://docs.astral.sh/uv/):
