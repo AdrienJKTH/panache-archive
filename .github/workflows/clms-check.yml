@@ -1,0 +1,35 @@
+name: CLMS access
+
+# Checks that the secret CLMS_SERVICE_KEY opens the Copernicus Land Monitoring Service's API (for
+# CORINE Land Cover, Panache's fixed layers at 200 m): a token, then CORINE 2018's entry and its
+# files. Nothing secret is printed.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/clms-check.yml
+      - scripts/clms-token.sh
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Token and CORINE 2018
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Ask for a token and CORINE 2018's files
+        env:
+          CLMS_SERVICE_KEY: ${{ secrets.CLMS_SERVICE_KEY }}
+        run: |
+          token=$(scripts/clms-token.sh)
+          echo "::add-mask::$token"
+          echo "token: ${#token} characters"
+          curl -fsS -H 'Accept: application/json' -H "Authorization: Bearer $token" \
+            "https://land.copernicus.eu/api/@search?portal_type=DataSet&UID=0407d497d3c44bcd93ce8fd5bf78596a&metadata_fields=UID&metadata_fields=dataset_download_information&metadata_fields=downloadable_files" \
+            > clc2018.json
+          jq -r '.items[0] | "dataset: \(.title) (\(.UID))"' clc2018.json
+          jq -r '.items[0].dataset_download_information.items[]? | "download information: \(.name) \(.["@id"]) \(.full_format // "")"' clc2018.json
+          jq -r '.items[0].downloadable_files.items[]? | "prepackaged: \(.file // .title // "?") | \(.format // "") | \(.area // "") | \(.type // "") | \(.["@id"] // "")"' clc2018.json | head -40
