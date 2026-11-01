@@ -291,13 +291,16 @@ def tolerance(step: float) -> float:
     return step / 2 + ARCHIVE_ROUNDING
 
 
-def render(asset_name: str, comparisons: Sequence[Comparison]) -> str:
-    """A Markdown table, for a run's summary."""
+def render(
+    asset_name: str, comparisons: Sequence[Comparison], reference: str = "Open-Meteo"
+) -> str:
+    """A Markdown table, for a run's summary; `reference` names what the asset is checked
+    against."""
     lines = [
-        f"### `{asset_name}` against Open-Meteo",
+        f"### `{asset_name}` against {reference}",
         "",
         "| Place | Cell | Column | Days | Max difference | Tolerance | r "
-        "| Peak, archive / Open-Meteo | |",
+        f"| Peak, archive / {reference} | |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for c in comparisons:

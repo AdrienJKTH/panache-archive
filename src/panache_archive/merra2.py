@@ -79,8 +79,11 @@ ATTRIBUTION: Final = (
     "Time-averaged,Single-Level,Assimilation,Aerosol Diagnostics V5.12.4, Greenbelt, MD, USA, "
     "Goddard Earth Sciences Data and Information Services Center (GES DISC)."
 )
-TOLERANCE: Final = 0.005 + 1e-6
+ARCHIVE_ROUNDING: Final = 0.005 + 1e-6
 """Against Giovanni's hours, which are the same values: the archive's rounding to 0.01 μg/m³."""
+GIOVANNI_DIGITS: Final = 5e-6
+"""Giovanni writes its hours with 6 significant digits (`5.59958e-07` kg/m³), each off by up to
+5e-6 of itself: 0.0013 μg/m³ more on Madrid's 259 μg/m³ of dust in March 2022."""
 
 logger = logging.getLogger(__name__)
 Fetch = Callable[[str], bytes]
@@ -250,8 +253,17 @@ def compare(
         values = cells.to_values(cells.read_cell(asset, row, column), header.scale)
         for k, species in enumerate(SPECIES):
             reference = giovanni_daily(species, place, header.first_day, last, fetch)
-            comparisons.append(compare_days(place, cell, species, values[k], reference, TOLERANCE))
+            allowed = tolerance(reference)
+            comparisons.append(compare_days(place, cell, species, values[k], reference, allowed))
     return comparisons
+
+
+def tolerance(reference: FloatArray) -> float:
+    """The largest daily difference that rounding explains: the archive's, plus Giovanni's
+    digits, which a daily mean keeps at most at its own size (the largest day's, for all)."""
+    known = reference[np.isfinite(reference)]
+    peak = float(np.max(np.abs(known))) if known.size else 0.0
+    return ARCHIVE_ROUNDING + GIOVANNI_DIGITS * peak
 
 
 def giovanni_daily(species: str, place: Place, first: date, last: date, fetch: Fetch) -> FloatArray:

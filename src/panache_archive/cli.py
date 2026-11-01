@@ -62,13 +62,14 @@ def _check(args: argparse.Namespace) -> int:
     for asset in args.assets:
         path = Path(asset)
         source = read_metadata(path).get("source")
+        reference = "Giovanni" if source == "merra2" else "Open-Meteo"
         if source == "era5":
             comparisons = era5.compare(path, get=check.http_get)
         elif source == "merra2":
             comparisons = merra2.compare(path, fetch=merra2.token_fetch(_earthdata_token()))
         else:
             comparisons = check.compare(path, get=check.http_get)
-        report = check.render(path.name, comparisons)
+        report = check.render(path.name, comparisons, reference)
         agree = agree and all(c.agrees for c in comparisons)
         twin = Path(args.twins or ".") / path.with_suffix(Domain.FRANCE.suffix).name
         if args.twins and path.suffix == Domain.EUROPE.suffix and twin.exists():
