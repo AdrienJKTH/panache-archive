@@ -1,0 +1,147 @@
+name: Domain maps
+
+# Builds Panache's map colourings over the whole CAMS Europe domain (Panache's D78) into the
+# release maps-europe-v1: one `.days` file per colouring (EAQI bands, unusual for the season,
+# causes) and year, a frame of 420 by 700 classes a day, ~2 to 20 KB. Panache's own backend builds
+# them (`panache-domain-maps`, checked out at the commit asked with the deploy key
+# PANACHE_DEPLOY_KEY, since Panache's repository is private), from this repository's releases
+# alone: each band of rows reads its rows of cams-europe-v1 and era5-europe-v1 over HTTP ranges
+# (~1 GB), weighs every day by the very rules of France's map, and leaves its classes as the run's
+# artifact; then one job stacks the bands and publishes them. Nothing comes from the ADS.
+# With `pilot`, only that band is built, kept as the run's artifact, and nothing is published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache whose backend builds the maps"
+        default: main
+      years:
+        description: "`all` (every whole year of the archives), a year, or a span such as 2013-2025"
+        default: all
+      pilot:
+        description: "Only this band (0 in the south to 11 in the north), as the run's artifact"
+        default: ""
+
+concurrency:
+  group: domain-maps
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: maps-europe-v1
+  BANDS: 12
+  PANACHE: ${{ inputs.panache }}
+  YEARS: ${{ inputs.years }}
+  PILOT: ${{ inputs.pilot }}
+
+jobs:
+  plan:
+    name: Plan the bands
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      bands: ${{ steps.plan.outputs.bands }}
+    steps:
+      - name: Plan
+        id: plan
+        run: |
+          if [[ -n "$PILOT" ]]; then
+            bands=$(jq -nc --argjson band "$PILOT" --argjson n "$BANDS" \
+              'if $band >= 0 and $band < $n then [$band] else error("no band \($band)") end')
+          else
+            bands=$(jq -nc --argjson n "$BANDS" '[range(0; $n)]')
+          fi
+          echo "bands=$bands" >> "$GITHUB_OUTPUT"
+          echo "Bands $bands of $BANDS, years $YEARS, Panache at $PANACHE" >> "$GITHUB_STEP_SUMMARY"
+
+  band:
+    name: Band ${{ matrix.band }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        band: ${{ fromJSON(needs.plan.outputs.bands) }}
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Build the band
+        run: |
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -v -o time.txt \
+            /tmp/panache/bin/panache-domain-maps band --band "${{ matrix.band }}" \
+            --bands "$BANDS" --years "$YEARS" --work "$RUNNER_TEMP/work" \
+            --out "band-${{ matrix.band }}"
+      - name: Report the band's time, memory and disk
+        if: always()
+        run: |
+          {
+            echo "**Band ${{ matrix.band }}**"
+            grep -E "Elapsed|Maximum resident" time.txt || true
+            du -sh "$RUNNER_TEMP/work" "band-${{ matrix.band }}" 2> /dev/null || true
+            df -h "$RUNNER_TEMP" | tail -1
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Keep the band's classes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: band-${{ matrix.band }}
+          path: band-${{ matrix.band }}/
+          retention-days: 7
+
+  assemble:
+    name: Stack the bands and publish
+    needs: band
+    if: inputs.pilot == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Download the bands
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --pattern "band-*" --dir parts
+      - name: Stack them
+        run: |
+          /tmp/panache/bin/panache-domain-maps assemble parts/band-* --out dist
+          du -ch dist/*.days | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" > /dev/null 2>&1 \
+            || gh release create "$RELEASE" --title "Panache's map colourings over the whole domain" \
+              --notes-file docs/maps-europe-release.md
+          gh release upload "$RELEASE" dist/*.days --clobber
