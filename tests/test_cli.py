@@ -312,5 +312,7 @@ def test_merra2_build_and_check_go_through_the_token(
     code = cli.main(["check", str(asset)])
 
     assert jobs == [merra2.Merra2Job(2021, (2,))]
-    assert capsys.readouterr().out.startswith(str(asset))
+    out = capsys.readouterr().out
+    assert out.startswith(str(asset))
+    assert f"### `{asset.name}` against Giovanni" in out
     assert (code, compared) == (0, [asset])

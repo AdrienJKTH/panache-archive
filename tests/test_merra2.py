@@ -193,7 +193,8 @@ def test_nothing_out_yet_plans_nothing() -> None:
 
 
 class FakeGiovanni:
-    """Giovanni's CSV of `hourly` at the cell nearest the asked place."""
+    """Giovanni's CSV of `hourly` at the cell nearest the asked place, with its 6 significant
+    digits."""
 
     def __init__(self, offset: float = 0.0) -> None:
         self.offset = offset
@@ -210,7 +211,7 @@ class FakeGiovanni:
         for n in range((last - first).days + 1):
             day = first + timedelta(days=n)
             for hour, value in enumerate(hourly(species, day)[:, row, column]):
-                lines.append(f"{day}T{hour:02d}:30:00,{float(value) + self.offset / 1e9:.6e}")
+                lines.append(f"{day}T{hour:02d}:30:00,{float(value) + self.offset / 1e9:g}")
         return "\n".join(lines).encode()
 
 
@@ -221,6 +222,15 @@ def test_an_asset_agrees_with_giovanni(tmp_path: Path) -> None:
 
     assert [c.column for c in comparisons] == list(SPECIES)
     assert all(c.cell == (46.0, 5.0) and c.days == 28 and c.agrees for c in comparisons)
+
+
+def test_the_tolerance_grows_with_giovannis_digits() -> None:
+    """Madrid's dust in 2022 differed from Giovanni by 0.00501 μg/m³ on a day of 137 μg/m³."""
+    assert merra2.tolerance(np.array([1.0, np.nan, 259.2])) == pytest.approx(
+        0.005 + 1e-6 + 5e-6 * 259.2
+    )
+    assert merra2.tolerance(np.array([136.845])) > 0.00501
+    assert merra2.tolerance(np.full(3, np.nan)) == merra2.ARCHIVE_ROUNDING
 
 
 def test_an_asset_off_giovanni_disagrees(tmp_path: Path) -> None:

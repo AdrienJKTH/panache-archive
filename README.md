@@ -117,7 +117,7 @@ The release [`merra2-europe-v1`](../../releases/tag/merra2-europe-v1) holds NASA
 - **Source**: MERRA-2 tavg1_2d_aer_Nx (M2T1NXAER) V5.12.4, hourly, 0.5° by 0.625°, doi:[10.5067/KLICLTZ8EM9D](https://doi.org/10.5067/KLICLTZ8EM9D). NASA's Cloud OPeNDAP cuts each daily file to the domain and the three species (~1.8 MB a day), with an Earthdata Login token (the secret `EARTHDATA_TOKEN`). A few months were reprocessed: their files are `MERRA2_401`, read when `MERRA2_400` is not found.
 - **Days**: UTC daily means of at least 18 hours.
 - **Grid**: 85 by 113 cells, from 30° N every 0.5° and from 25° W every 0.625°: version 2 of the format, for its two steps; one cell a frame.
-- **Check**: against Giovanni's hours at Lyon, Madrid, Warsaw, Athens and Helsinki, the same values but for the archive's rounding (0.005 μg/m³).
+- **Check**: against Giovanni's hours at Lyon, Madrid, Warsaw, Athens and Helsinki, the same values but for the archive's rounding (0.005 μg/m³) and Giovanni's 6 significant digits (up to 5 millionths of the value, 0.0013 μg/m³ on 259 μg/m³ of dust).
 - The [`MERRA-2`](.github/workflows/merra2.yml) workflow builds what the release lacks, and each Monday the months MERRA-2 put out since (it comes out a few weeks after each month), replacing the year under way's asset. Labelling a pull request `pilot-merra2` tries it on February 2021.
 
 ```bash
