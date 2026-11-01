@@ -43,7 +43,8 @@ def synthetic(variable: Hourly, hours: NDArray[np.int64], y: int, x: int) -> Flo
         Hourly.WIND_U: 3 * slow + 0.5 * cycle,
         Hourly.WIND_V: -2 + 2 * cycle,
         Hourly.PRESSURE: 101_300 + 800 * slow,
-        Hourly.PRECIPITATION: np.maximum(0, 2 * slow - 0.5) * (hours % 3 == 0),
+        # In tenths of a millimetre, as the bucket keeps it.
+        Hourly.PRECIPITATION: np.round(np.maximum(0, 2 * slow - 0.5), 1) * (hours % 3 == 0),
         Hourly.RADIATION: np.maximum(0, 400 * cycle),
         Hourly.CLOUD_COVER: 50 + 40 * slow,
         Hourly.BOUNDARY_LAYER_HEIGHT: 600 + 400 * cycle + 100 * slow,
@@ -213,18 +214,13 @@ def test_an_asset_holds_the_box_each_day(tmp_path: Path) -> None:
 
 class FakeArchiveApi:
     """The archive API at Lyon's point (543, 739), from `synthetic`, as the API makes its days:
-    temperature and dew point corrected for altitude, values rounded."""
+    temperature and dew point corrected for altitude, the radiation summed over the 24 hours
+    ending in the day but the rain over the hours stamped 00:00 to 23:00 (since October 2026,
+    D62), values rounded. It answers the daily and hourly names asked for."""
 
-    def __init__(
-        self,
-        units: dict[str, str] | None = None,
-        days_short: int = 0,
-        rain_hour_earlier: bool = False,
-    ) -> None:
+    def __init__(self, units: dict[str, str] | None = None, days_short: int = 0) -> None:
         self.units = units or {}
         self.days_short = days_short
-        self.rain_hour_earlier = rain_hour_earlier
-        """Sum the rain over 00:00 to 23:00, as the API does since October 2026 (D62)."""
         self.queries: list[dict[str, str]] = []
 
     def __call__(self, url: str) -> bytes:
@@ -232,9 +228,9 @@ class FakeArchiveApi:
         self.queries.append(query)
         first_day = date.fromisoformat(query["start_date"])
         days = (date.fromisoformat(query["end_date"]) - first_day).days + 1
-        first = hour_of(first_day)
+        stamps = hour_of(first_day) + np.arange(days * 24)
         values = {
-            v: synthetic(v, first + np.arange(days * 24) + self._shift(v), 543, 739)[:, None, None]
+            v: synthetic(v, stamps + (1 if v is Hourly.RADIATION else 0), 543, 739)[:, None, None]
             for v in Hourly
         }
         values[Hourly.TEMPERATURE] = values[Hourly.TEMPERATURE] + ALTITUDE_OFFSET
@@ -242,26 +238,25 @@ class FakeArchiveApi:
         daily = era5.daily_weather(values)
         decimals = {Daily.WIND_DIRECTION: 0, Daily.CLOUD_COVER: 0, Daily.RELATIVE_HUMIDITY: 0}
         shown = days - self.days_short
+        asked_daily = [Daily(name) for name in query["daily"].split(",")]
+        asked_hourly = [Hourly(name) for name in query["hourly"].split(",")]
+        hourly_decimals = {Hourly.PRECIPITATION: 1, Hourly.BOUNDARY_LAYER_HEIGHT: 0}
         answer: dict[str, Any] = {
             "daily": {
                 c.value: [round(float(v), decimals.get(c, 1)) for v in daily[c][:shown, 0, 0]]
-                for c in Daily
-                if c is not Daily.BOUNDARY_LAYER_HEIGHT
+                for c in asked_daily
             },
-            "daily_units": {c.value: self.units.get(c.value, era5.UNITS[c]) for c in Daily},
+            "daily_units": {c.value: self.units.get(c.value, era5.UNITS[c]) for c in asked_daily},
             "hourly": {
-                Daily.BOUNDARY_LAYER_HEIGHT.value: [
-                    round(float(v)) for v in values[Hourly.BOUNDARY_LAYER_HEIGHT][:, 0, 0]
-                ]
+                v.value: [round(float(x), hourly_decimals[v]) for x in values[v][:, 0, 0]]
+                for v in asked_hourly
             },
-            "hourly_units": {Daily.BOUNDARY_LAYER_HEIGHT.value: "m"},
+            "hourly_units": {
+                Hourly.PRECIPITATION.value: "mm",
+                Hourly.BOUNDARY_LAYER_HEIGHT.value: "m",
+            },
         }
         return json.dumps(answer).encode()
-
-    def _shift(self, variable: Hourly) -> int:
-        if variable is Hourly.PRECIPITATION and self.rain_hour_earlier:
-            return 0
-        return 1 if variable in era5.ACCUMULATED else 0
 
 
 @pytest.fixture
@@ -281,9 +276,10 @@ def test_an_asset_agrees_with_the_archive_api(asset: Path) -> None:
     temperature = comparisons[0]
     assert temperature.offset == pytest.approx(-ALTITUDE_OFFSET, abs=0.06)
     assert api.queries[0]["models"] == "era5"
-    assert api.queries[0]["hourly"] == "boundary_layer_height"
+    assert api.queries[0]["hourly"] == "precipitation,boundary_layer_height"
+    assert "precipitation_sum" not in api.queries[0]["daily"]
     assert api.queries[0]["start_date"] == "2021-01-01"
-    assert api.queries[0]["end_date"] == "2021-01-31"
+    assert api.queries[0]["end_date"] == "2021-02-01"  # for the rain of 31 January's 24:00
 
 
 def test_another_unit_is_an_error(asset: Path) -> None:
@@ -292,7 +288,7 @@ def test_another_unit_is_an_error(asset: Path) -> None:
 
 
 def test_a_short_answer_is_an_error(asset: Path) -> None:
-    with pytest.raises(ValueError, match="answered 30 values"):
+    with pytest.raises(ValueError, match="answered 31 values"):
         era5.compare(asset, [LYON], get=FakeArchiveApi(days_short=1))
 
 
@@ -481,10 +477,27 @@ def test_whole_domain_jobs_are_named_cells() -> None:
     ] == ["era5-2021.cells"]
 
 
-def test_rain_summed_an_hour_earlier_still_agrees_by_correlation(asset: Path) -> None:
-    comparisons = era5.compare(asset, [LYON], get=FakeArchiveApi(rain_hour_earlier=True))
+def test_rain_is_checked_on_the_api_hours_over_the_archives_day(asset: Path) -> None:
+    """The API's own daily rain would differ by the hour at 00:00 (D62); its hours summed over
+    01:00 to 24:00 agree to the rounding."""
+    comparisons = era5.compare(asset, [LYON], get=FakeArchiveApi())
 
     (rain,) = [c for c in comparisons if c.column == Daily.PRECIPITATION.value]
-    assert rain.max_difference > rain.tolerance  # the days differ by an hour of rain
-    assert rain.min_correlation == era5.PRECIPITATION_CORRELATION
+    assert rain.min_correlation is None
+    assert rain.tolerance == pytest.approx(0.055)
+    assert rain.max_difference <= 0.005
+    assert rain.agrees
+
+
+def test_a_missing_hour_of_rain_leaves_its_day_out(asset: Path) -> None:
+    class HourMissing(FakeArchiveApi):
+        def __call__(self, url: str) -> bytes:
+            answer = json.loads(super().__call__(url))
+            answer["hourly"][Hourly.PRECIPITATION.value][24 * 31] = None  # 1 February, 00:00
+            return json.dumps(answer).encode()
+
+    comparisons = era5.compare(asset, [LYON], get=HourMissing())
+
+    (rain,) = [c for c in comparisons if c.column == Daily.PRECIPITATION.value]
+    assert rain.days == 30
     assert rain.agrees
