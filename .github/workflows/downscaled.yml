@@ -1,0 +1,131 @@
+name: Downscaled maps
+
+# Builds Panache's daily maps of PM2.5 and NO₂ at 1 km over France (Panache's D74) into the
+# release downscaled-v1: one `.days` file per pollutant and year, ~1 MB a day. Panache's own
+# backend builds them (`panache-downscaling-maps`, installed from the commit asked): it trains each
+# pollutant's model once on the EEA's background stations (release downscaling-v1), then predicts
+# every land cell of every day, ~25 s a day, from the archive's CAMS (cams-v1) and ERA5 (era5-v1).
+# A run builds the pollutants and years the release lacks; with `days`, a pilot builds each year's
+# first days as the run's artifacts, without touching the release's maps.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache whose backend builds the maps"
+        default: main
+      years:
+        description: "`all` (2013 to the last complete year), a year, or a span such as 2013-2025"
+        default: all
+      days:
+        description: "Only each year's first days (a pilot); empty for whole years"
+        default: ""
+
+concurrency:
+  group: downscaled
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: downscaled-v1
+  PANACHE: ${{ inputs.panache }}
+  DAYS: ${{ inputs.days }}
+
+jobs:
+  train:
+    name: Train the models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python \
+            "panache @ git+https://github.com/AdrienJKTH/panache@$PANACHE#subdirectory=backend"
+      - name: Fetch the archive, every year
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch-for-maps.sh data/archive all
+      - name: Train
+        run: /tmp/panache/bin/panache-downscaling-maps --archive data/archive train --out models
+      - name: Make sure the release exists, with the models
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" > /dev/null 2>&1 \
+            || gh release create "$RELEASE" --title "PM2.5 and NO₂ at 1 km over France, day by day" \
+              --notes-file docs/downscaled-release.md
+          gh release upload "$RELEASE" models/*.lgb.txt --clobber
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          YEARS: ${{ inputs.years }}
+        run: |
+          last=$(( $(date -u +%Y) - 1 ))
+          case "$YEARS" in
+            all) first=2013 ;;
+            *-*) first=${YEARS%-*} last=${YEARS#*-} ;;
+            *) first=$YEARS last=$YEARS ;;
+          esac
+          gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+          matrix=$(jq -nc --argjson first "$first" --argjson last "$last" \
+            --rawfile built built.txt --arg pilot "$DAYS" '
+            [range($first; $last + 1) as $year
+             | ("pm2_5", "nitrogen_dioxide") as $pollutant
+             | {pollutant: $pollutant, year: $year}
+             | select($pilot != ""
+                 or (($built | split("\n")) | index("downscaled-\(.pollutant)-\(.year).days") | not))]')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) pollutant-years to build"' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.pollutant }} ${{ matrix.year }}
+    needs: train
+    if: needs.train.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.train.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python \
+            "panache @ git+https://github.com/AdrienJKTH/panache@$PANACHE#subdirectory=backend"
+      - name: Fetch the archive's year and the models
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/fetch-for-maps.sh data/archive "${{ matrix.year }}"
+          gh release download "$RELEASE" --pattern "*.lgb.txt" --dir models
+      - name: Build
+        run: >
+          /tmp/panache/bin/panache-downscaling-maps --archive data/archive
+          year --pollutant "${{ matrix.pollutant }}" --year "${{ matrix.year }}" --models models
+          ${DAYS:+--days "$DAYS"} --out dist
+      - name: Publish
+        if: env.DAYS == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.days --clobber
+      - name: Keep as the pilot's artifact
+        if: env.DAYS != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: downscaled-${{ matrix.pollutant }}-${{ matrix.year }}
+          path: dist/
