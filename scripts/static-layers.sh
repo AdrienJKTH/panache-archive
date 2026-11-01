@@ -46,8 +46,10 @@ gdalwarp -q -te "$west" "$south" "$east" "$north" -ts "$cols" "$rows" -r average
 ne=https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson
 curl -fsSL --retry 4 -o "$work/land.geojson" "$ne/ne_10m_land.geojson"
 curl -fsSL --retry 4 -o "$work/lakes.geojson" "$ne/ne_10m_lakes.geojson"
-gdal_rasterize -q -burn 1 -init 0 -ot Byte -te "$west" "$south" "$east" "$north" \n  -ts $((cols * 10)) $((rows * 10)) "$work/land.geojson" "$work/land-fine.tif"
-gdal_rasterize -q -burn 0 "$work/lakes.geojson" "$work/land-fine.tif"
-gdalwarp -q -te "$west" "$south" "$east" "$north" -ts "$cols" "$rows" -r average -ot Float32 \n  -co COMPRESS=NONE "$work/land-fine.tif" "$work/land.tif"
+gdal_rasterize -q -burn 1 -init 0 -ot Byte -te "$west" "$south" "$east" "$north" \
+  -ts $((cols * 10)) $((rows * 10)) -l ne_10m_land "$work/land.geojson" "$work/land-fine.tif"
+gdal_rasterize -q -burn 0 -l ne_10m_lakes "$work/lakes.geojson" "$work/land-fine.tif"
+gdalwarp -q -te "$west" "$south" "$east" "$north" -ts "$cols" "$rows" -r average -ot Float32 \
+  -co COMPRESS=NONE "$work/land-fine.tif" "$work/land.tif"
 rm "$work/land-fine.tif" "$work"/*.geojson
 ls -l "$work"/*.tif
