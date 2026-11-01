@@ -91,9 +91,9 @@ jobs:
             --rawfile built built.txt --arg pilot "$DAYS" '
             [range($first; $last + 1) as $year
              | ("pm2_5", "nitrogen_dioxide") as $pollutant
-             | {pollutant: $pollutant, year: $year}
              | select($pilot != ""
-                 or (($built | split("\n")) | index("downscaled-\(.pollutant)-\(.year).days") | not))]')
+                 or (($built | split("\n")) | index("downscaled-\($pollutant)-\($year).days") | not))
+             | {pollutant: $pollutant, year: $year}]')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix" | jq -r '"\(length) pollutant-years to build"' >> "$GITHUB_STEP_SUMMARY"
 
