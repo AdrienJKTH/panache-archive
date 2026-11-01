@@ -1,10 +1,10 @@
 name: Downscaling inputs
 
-# Builds what Panache's downscaling learns from and maps with (Panache's P4) into the release
+# Builds what Panache's downscaling learns from and maps with (Panache's D74) into the release
 # downscaling-v1: each pollutant's daily means at France's stations, from the EEA's validated
-# hours (~1.3 GB of files, read and dropped), and the 1 km fixed layers (GHS-POP, GHS-BUILT-S and
-# the Copernicus DEM, cut by GDAL). Labelling a pull request `pilot-downscaling` builds them as
-# the run's artifacts, without touching the release.
+# hours (~1.3 GB of files, read and dropped), and the 1 km fixed layers (GHS-POP, GHS-BUILT-S, the
+# Copernicus DEM and Natural Earth's land, cut by GDAL). Labelling a pull request
+# `pilot-downscaling` builds them as the run's artifacts, without touching the release.
 
 on:
   workflow_dispatch:

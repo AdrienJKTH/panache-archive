@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Cuts and averages the downscaling's fixed layers onto France's 30" grid with GDAL, for
 # `panache-archive static` (src/panache_archive/static.py): GHS-POP and GHS-BUILT-S from JRC's
-# zips (~480 and ~190 MB, deleted once cut), the Copernicus DEM GLO-90 read from its AWS bucket.
+# zips (~480 and ~190 MB, deleted once cut), the Copernicus DEM GLO-90 read from its AWS bucket,
+# and Natural Earth's land and lakes (1:10 million) for the share of each cell on land.
 #
 # Usage: scripts/static-layers.sh WORKDIR
-# Writes WORKDIR/population.tif, built_up.tif and elevation.tif, 1,860 by 1,260 pixels.
+# Writes WORKDIR/population.tif, built_up.tif, elevation.tif and land.tif, 1,860 by 1,260 pixels.
 set -euo pipefail
 
 work=$1
@@ -40,4 +41,13 @@ done
 gdalbuildvrt -q "$work/elevation.vrt" "${tiles[@]}"
 gdalwarp -q -te "$west" "$south" "$east" "$north" -ts "$cols" "$rows" -r average -ot Float32 \
   -dstnodata nan -co COMPRESS=NONE "$work/elevation.vrt" "$work/elevation.tif"
+
+# Land: Natural Earth's polygons burnt on cells ten times finer, lakes burnt back out, averaged.
+ne=https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson
+curl -fsSL --retry 4 -o "$work/land.geojson" "$ne/ne_10m_land.geojson"
+curl -fsSL --retry 4 -o "$work/lakes.geojson" "$ne/ne_10m_lakes.geojson"
+gdal_rasterize -q -burn 1 -init 0 -ot Byte -te "$west" "$south" "$east" "$north" \n  -ts $((cols * 10)) $((rows * 10)) "$work/land.geojson" "$work/land-fine.tif"
+gdal_rasterize -q -burn 0 "$work/lakes.geojson" "$work/land-fine.tif"
+gdalwarp -q -te "$west" "$south" "$east" "$north" -ts "$cols" "$rows" -r average -ot Float32 \n  -co COMPRESS=NONE "$work/land-fine.tif" "$work/land.tif"
+rm "$work/land-fine.tif" "$work"/*.geojson
 ls -l "$work"/*.tif

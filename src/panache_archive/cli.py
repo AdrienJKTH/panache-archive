@@ -181,7 +181,11 @@ def _stations(args: argparse.Namespace) -> int:
 def _static(args: argparse.Namespace) -> int:
     layers = Path(args.layers)
     path = static.build(
-        layers / "population.tif", layers / "built_up.tif", layers / "elevation.tif", Path(args.out)
+        layers / "population.tif",
+        layers / "built_up.tif",
+        layers / "elevation.tif",
+        layers / "land.tif",
+        Path(args.out),
     )
     print(path)
     return 0

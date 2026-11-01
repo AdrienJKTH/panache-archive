@@ -1,5 +1,5 @@
 """Daily means at a country's monitoring stations, from the EEA's validated hours (E1a): the
-measurements Panache's downscaling learns from (Panache's P4).
+measurements Panache's downscaling learns from (Panache's D74).
 
 The EEA's Air Quality Download Service lists, for a country, a pollutant and a period, one
 Parquet file per sampling point, each holding every validated hour since 2013 (~1.5 MB). Its list

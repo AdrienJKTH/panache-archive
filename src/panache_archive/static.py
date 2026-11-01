@@ -1,5 +1,5 @@
 """Fixed layers over France at 30 arc seconds (~1 km): what places a point within its CAMS cell,
-for Panache's downscaling (Panache's P4).
+for Panache's downscaling (Panache's D74).
 
 The grid is 1/120° inside France's box (41 to 51.5° N, 5.5° W to 10° E): 1,260 by 1,860 cells,
 twelve by twelve in each 0.1° cell of CAMS, whose edges it shares.
@@ -8,11 +8,13 @@ twelve by twelve in each 0.1° cell of CAMS, whose edges it shares.
   grid (`GHS_POP_E2020_GLOBE_R2023A_4326_30ss`): residents per cell, divided by the cell's area.
 - **Built-up surface** (share of the cell): JRC's GHS-BUILT-S, epoch 2020, release 2023A
   (`GHS_BUILT_S_E2020_GLOBE_R2023A_4326_30ss`): built-up m² per cell, divided by its area.
-- **Elevation** (m): the Copernicus DEM GLO-90 (3 arc seconds), averaged over each cell; NaN
-  where it has no tile (the sea).
+- **Elevation** (m): the Copernicus DEM GLO-90 (3 arc seconds), averaged over each cell; 0 or
+  NaN where it has no tile (the sea).
+- **Land** (share of the cell): Natural Earth's land, lakes taken out, at 1:10 million (public
+  domain), burnt on cells ten times finer and averaged: what the maps keep (the sea is not drawn).
 
 GDAL cuts and averages the sources onto the grid (`scripts/static-layers.sh`); this module reads
-its three GeoTIFFs, checks they lie on the grid, and writes one `.npz` asset.
+its four GeoTIFFs, checks they lie on the grid, and writes one `.npz` asset.
 """
 
 import json
@@ -41,6 +43,7 @@ SOURCES: Final = {
     "doi:10.2905/9F06F36F-4B11-47EC-ABB0-4F8B7B1D72EA",
     "elevation": "Copernicus DEM GLO-90 (© DLR e.V. 2010-2014 and © Airbus Defence and Space "
     "GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA)",
+    "land": "Natural Earth 1:10m land and lakes, v5.1.2 (public domain)",
 }
 TOLERANCE_DEGREES: Final = 1e-9
 
@@ -126,13 +129,20 @@ def built_up_share(surface_m2: FloatArray, grid: Grid) -> FloatArray:
 
 
 def build(
-    population: Path, built_up: Path, elevation: Path, out: Path, *, grid: Grid = FRANCE_1KM
+    population: Path,
+    built_up: Path,
+    elevation: Path,
+    land: Path,
+    out: Path,
+    *,
+    grid: Grid = FRANCE_1KM,
 ) -> Path:
-    """The `.npz` asset: the three layers, rows from the south, and what they are."""
+    """The `.npz` asset: the four layers, rows from the south, and what they are."""
     layers = {
         "population": population_density(read_layer(population, grid), grid),
         "built_up": built_up_share(read_layer(built_up, grid), grid),
         "elevation": read_layer(elevation, grid),
+        "land": np.nan_to_num(read_layer(land, grid), nan=0.0).clip(0, 1),
     }
     about = {
         "grid": {
@@ -143,7 +153,12 @@ def build(
             "cells_per_degree": grid.cells_per_degree,
             "rows": "from the south",
         },
-        "units": {"population": "inhabitants/km²", "built_up": "share", "elevation": "m"},
+        "units": {
+            "population": "inhabitants/km²",
+            "built_up": "share",
+            "elevation": "m",
+            "land": "share",
+        },
         "sources": SOURCES,
         "built": datetime.now(UTC).isoformat(timespec="seconds"),
     }

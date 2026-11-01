@@ -110,15 +110,19 @@ def test_built_up_surface_becomes_a_share() -> None:
     assert share[0, :3].tolist() == pytest.approx([0.25, 1.0, 0.0])
 
 
-def test_build_writes_the_three_layers_and_what_they_are(tmp_path: Path) -> None:
+def test_build_writes_the_four_layers_and_what_they_are(tmp_path: Path) -> None:
     rows, cols = SMALL.shape
     population = geotiff(tmp_path / "population.tif", np.full((rows, cols), 50.0, np.float32))
     built = geotiff(tmp_path / "built_up.tif", np.zeros((rows, cols), np.float32))
     elevation = np.full((rows, cols), 170.0, np.float32)
     elevation[0, 0] = np.nan
     dem = geotiff(tmp_path / "elevation.tif", elevation, nodata="nan")
+    shore = np.ones((rows, cols), np.float32)
+    shore[:, 0] = 0.25
+    shore[0, 1] = 1.0000001
+    land = geotiff(tmp_path / "land.tif", shore)
 
-    path = static.build(population, built, dem, tmp_path / "dist", grid=SMALL)
+    path = static.build(population, built, dem, land, tmp_path / "dist", grid=SMALL)
 
     assert path.name == static.ASSET
     with np.load(path) as asset:
@@ -126,6 +130,7 @@ def test_build_writes_the_three_layers_and_what_they_are(tmp_path: Path) -> None
             "about",
             "built_up",
             "elevation",
+            "land",
             "lats",
             "lons",
             "population",
@@ -134,7 +139,9 @@ def test_build_writes_the_three_layers_and_what_they_are(tmp_path: Path) -> None
         assert asset["population"].dtype == np.float32
         assert np.isnan(asset["elevation"][-1, 0])
         assert asset["lats"].tolist() == SMALL.lats.tolist()
+        assert asset["land"][:, 0].tolist() == [0.25] * rows
+        assert asset["land"].max() == 1.0
         about = json.loads(str(asset["about"]))
     assert about["grid"]["cells_per_degree"] == 120
     assert about["units"]["population"] == "inhabitants/km²"
-    assert set(about["sources"]) == {"population", "built_up", "elevation"}
+    assert set(about["sources"]) == {"population", "built_up", "elevation", "land"}

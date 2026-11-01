@@ -336,13 +336,13 @@ def test_stations_builds_last_years_means_by_default(
     assert capsys.readouterr().out.strip() == str(tmp_path / "stations.parquet")
 
 
-def test_static_reads_gdals_three_cuts(
+def test_static_reads_gdals_four_cuts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     asked: list[tuple[Path, ...]] = []
 
-    def build(population: Path, built_up: Path, elevation: Path, out: Path) -> Path:
-        asked.append((population, built_up, elevation, out))
+    def build(population: Path, built_up: Path, elevation: Path, land: Path, out: Path) -> Path:
+        asked.append((population, built_up, elevation, land, out))
         return out / "static.npz"
 
     monkeypatch.setattr("panache_archive.static.build", build)
@@ -355,6 +355,7 @@ def test_static_reads_gdals_three_cuts(
             tmp_path / "population.tif",
             tmp_path / "built_up.tif",
             tmp_path / "elevation.tif",
+            tmp_path / "land.tif",
             Path("dist"),
         )
     ]
