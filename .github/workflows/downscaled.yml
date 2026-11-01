@@ -2,7 +2,8 @@ name: Downscaled maps
 
 # Builds Panache's daily maps of PM2.5 and NO₂ at 1 km over France (Panache's D74) into the
 # release downscaled-v1: one `.days` file per pollutant and year, ~1 MB a day. Panache's own
-# backend builds them (`panache-downscaling-maps`, installed from the commit asked): it trains each
+# backend builds them (`panache-downscaling-maps`, checked out at the commit asked with the deploy
+# key PANACHE_DEPLOY_KEY, since Panache's repository is private): it trains each
 # pollutant's model once on the EEA's background stations (release downscaling-v1), then predicts
 # every land cell of every day, ~25 s a day, from the archive's CAMS (cams-v1) and ERA5 (era5-v1).
 # A run builds the pollutants and years the release lacks; with `days`, a pilot builds each year's
@@ -45,11 +46,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
       - name: Install Panache's backend
         run: |
           uv venv /tmp/panache --python 3.12
-          uv pip install --python /tmp/panache/bin/python \
-            "panache @ git+https://github.com/AdrienJKTH/panache@$PANACHE#subdirectory=backend"
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
       - name: Fetch the archive, every year
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,11 +112,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
       - name: Install Panache's backend
         run: |
           uv venv /tmp/panache --python 3.12
-          uv pip install --python /tmp/panache/bin/python \
-            "panache @ git+https://github.com/AdrienJKTH/panache@$PANACHE#subdirectory=backend"
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
       - name: Fetch the archive's year and the models
         env:
           GH_TOKEN: ${{ github.token }}
