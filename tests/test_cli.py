@@ -334,3 +334,47 @@ def test_merra2_build_and_check_go_through_the_token(
     assert out.startswith(str(asset))
     assert f"### `{asset.name}` against Giovanni" in out
     assert (code, compared) == (0, [asset])
+
+
+def test_stations_builds_last_years_means_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked: list[tuple[str, str, Path, int]] = []
+
+    def build(country: str, pollutant: str, out: Path, *, last_year: int) -> Path:
+        asked.append((country, pollutant, out, last_year))
+        return out / "stations.parquet"
+
+    monkeypatch.setattr("panache_archive.stations.build", build)
+
+    code = cli.main(["stations", "--pollutant", "nitrogen_dioxide", "--out", str(tmp_path)])
+
+    assert code == 0
+    assert asked == [("FR", "nitrogen_dioxide", tmp_path, date.today().year - 1)]
+    assert capsys.readouterr().out.strip() == str(tmp_path / "stations.parquet")
+
+
+def test_static_reads_gdals_four_cuts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked: list[tuple[Path, ...]] = []
+
+    def build(population: Path, built_up: Path, elevation: Path, land: Path, out: Path) -> Path:
+        asked.append((population, built_up, elevation, land, out))
+        return out / "static.npz"
+
+    monkeypatch.setattr("panache_archive.static.build", build)
+
+    code = cli.main(["static", "--layers", str(tmp_path), "--out", "dist"])
+
+    assert code == 0
+    assert asked == [
+        (
+            tmp_path / "population.tif",
+            tmp_path / "built_up.tif",
+            tmp_path / "elevation.tif",
+            tmp_path / "land.tif",
+            Path("dist"),
+        )
+    ]
+    assert capsys.readouterr().out.strip() == str(Path("dist") / "static.npz")
