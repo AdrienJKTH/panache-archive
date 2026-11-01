@@ -178,3 +178,33 @@ def test_the_cells_must_be_a_regular_grid(tmp_path: Path) -> None:
         cells.write(
             tmp_path / "a.cells", lats, LONS, FIRST_DAY, [np.zeros((1, 3, LONS.size))], metadata={}
         )
+
+
+def test_a_grid_of_two_steps_takes_the_second_version(tmp_path: Path) -> None:
+    lats = np.round(30.0 + 0.5 * np.arange(3), 4)
+    lons = np.round(-25.0 + 0.625 * np.arange(10), 4)
+    values = np.arange(2 * 3 * 10, dtype=np.float64).reshape(2, 3, 10) / 4
+    path = tmp_path / "merra2.cells"
+
+    cells.write(path, lats, lons, FIRST_DAY, [values], metadata={}, cells_per_frame=1)
+
+    header = cells.read_header(path)
+    assert path.read_bytes()[8:10] == struct.pack("<H", 2)
+    assert (header.step, header.lon_step, header.longitude_step) == (0.5, 0.625, 0.625)
+    np.testing.assert_array_equal(header.lons, lons)
+    np.testing.assert_array_equal(cells.read_all(path)[1][0], cells.to_hundredths(values))
+
+
+def test_a_grid_of_one_step_keeps_the_first_version(tmp_path: Path) -> None:
+    path = _write(tmp_path / "a.cells", _values())
+
+    assert path.read_bytes()[8:10] == struct.pack("<H", 1)
+    assert cells.read_header(path).lon_step is None
+
+
+def test_an_axis_of_one_cell_takes_the_other_s_step(tmp_path: Path) -> None:
+    path = tmp_path / "row.cells"
+
+    cells.write(path, LATS[:1], LONS, FIRST_DAY, [np.zeros((1, 1, LONS.size))], metadata={})
+
+    assert cells.read_header(path).step == 0.1

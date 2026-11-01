@@ -1,0 +1,158 @@
+name: MERRA-2
+run-name: >-
+  ${{ github.event_name == 'pull_request' && github.event.pull_request.title || 'MERRA-2' }}
+
+# Builds the archive's MERRA-2 assets: NASA's daily aerosol surface concentrations (dust, organic
+# and black carbon) over the whole CAMS domain, each day cut by NASA's Cloud OPeNDAP with the
+# Earthdata token (the secret EARTHDATA_TOKEN; ~1.8 MB a day, a year in ~7 min), published to
+# the release merra2-europe-v1 and checked against Giovanni. Each Monday it adds the months
+# MERRA-2 put out since, replacing the year under way's asset. Labelling a pull request
+# `pilot-merra2` tries its code on February 2021 first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "`all` (2013 to now), a year, or a span such as 2013-2025"
+        default: all
+  schedule:
+    - cron: "23 5 * * 1"
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: merra2-${{ github.event_name == 'pull_request' && github.ref || 'build' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: merra2-europe-v1
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      superseded: ${{ steps.plan.outputs.superseded }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "MERRA-2 daily aerosols over the whole domain"
+          --notes-file docs/merra2-europe-release.md
+      - name: List the assets already built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+      - name: Plan
+        id: plan
+        env:
+          YEARS: ${{ inputs.years || 'all' }}
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+        run: |
+          matrix=$(uv run panache-archive merra2-plan --years "$YEARS" --built built.txt \
+            --superseded superseded.txt)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "superseded=$(paste -sd, superseded.txt)" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) assets to build"' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.asset }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build
+        env:
+          YEAR: ${{ matrix.year }}
+          MONTHS: ${{ matrix.months }}
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+        run: uv run panache-archive merra2-build --year "$YEAR" --months "1-$MONTHS" --out dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/merra2-* --clobber
+      - name: Check against Giovanni
+        env:
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+        run: uv run panache-archive check dist/merra2-* --summary "$GITHUB_STEP_SUMMARY"
+
+  clean:
+    name: Delete the superseded parts of a year
+    needs: [plan, build]
+    if: needs.plan.outputs.superseded != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Delete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPERSEDED: ${{ needs.plan.outputs.superseded }}
+        run: |
+          for asset in ${SUPERSEDED//,/ }; do
+            gh release delete-asset "$RELEASE" "$asset" --yes --repo "$GITHUB_REPOSITORY"
+          done
+
+  pilot:
+    name: Pilot, February 2021
+    if: github.event_name == 'pull_request' && github.event.label.name == 'pilot-merra2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build February 2021
+        env:
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+        run: |
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -f "%e %M" -o took.txt uv run panache-archive merra2-build \
+            --year 2021 --months 2 --out dist
+          read -r seconds kilobytes < took.txt
+          echo "| merra2-2021-02.cells | ${seconds} s | $((kilobytes / 1024)) MB |" | tee -a \
+            "$GITHUB_STEP_SUMMARY"
+          du -h dist/merra2-* | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Check against Giovanni
+        env:
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+        run: uv run panache-archive check dist/merra2-* --summary "$GITHUB_STEP_SUMMARY"
+      - name: Keep the asset
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pilot-merra2
+          path: dist/
+          if-no-files-found: ignore

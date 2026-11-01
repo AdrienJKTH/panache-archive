@@ -69,7 +69,7 @@ Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps 
 
 ### The Hugging Face mirror
 
-The whole domain's releases `cams-europe-v1` and `era5-europe-v1` are mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (one folder per release), which Panache reads when GitHub fails (its decisions D66 and D71). After each CAMS or ERA5 run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
+The whole domain's releases `cams-europe-v1`, `era5-europe-v1` and `merra2-europe-v1` are mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (one folder per release), which Panache reads when GitHub fails (its decisions D66, D71 and D72). After each CAMS, ERA5 or MERRA-2 run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
 
 - uploads every asset the mirror lacks, or holds with another size or SHA-256 (in batches of at most 4 GB, one commit each, each file checked against the release's digest);
 - deletes the files the release no longer holds (an interim year replaced by its validated twin);
@@ -102,6 +102,26 @@ The release [`era5-v1`](../../releases/tag/era5-v1) holds one asset per year, su
 
 ```bash
 gh workflow run era5.yml -f domain=europe -f years=all
+```
+
+## MERRA-2 daily aerosols
+
+The release [`merra2-europe-v1`](../../releases/tag/merra2-europe-v1) holds NASA's MERRA-2 aerosols over the whole CAMS domain (Panache's D72), for the second opinion on an episode's aerosols (its D68): one `.cells` asset per year, such as `merra2-2021.cells`, and the year under way as its months out so far, such as `merra2-2026-01-09.cells`.
+
+| Statistic | Unit | |
+|---|---|---|
+| `DUSMASS` | μg/m³ | Dust, its five bins up to 20 µm |
+| `OCSMASS` | μg/m³ | Organic carbon, from every source |
+| `BCSMASS` | μg/m³ | Black carbon, from every source |
+
+- **Source**: MERRA-2 tavg1_2d_aer_Nx (M2T1NXAER) V5.12.4, hourly, 0.5° by 0.625°, doi:[10.5067/KLICLTZ8EM9D](https://doi.org/10.5067/KLICLTZ8EM9D). NASA's Cloud OPeNDAP cuts each daily file to the domain and the three species (~1.8 MB a day), with an Earthdata Login token (the secret `EARTHDATA_TOKEN`). A few months were reprocessed: their files are `MERRA2_401`, read when `MERRA2_400` is not found.
+- **Days**: UTC daily means of at least 18 hours.
+- **Grid**: 85 by 113 cells, from 30° N every 0.5° and from 25° W every 0.625°: version 2 of the format, for its two steps; one cell a frame.
+- **Check**: against Giovanni's hours at Lyon, Madrid, Warsaw, Athens and Helsinki, the same values but for the archive's rounding (0.005 μg/m³).
+- The [`MERRA-2`](.github/workflows/merra2.yml) workflow builds what the release lacks, and each Monday the months MERRA-2 put out since (it comes out a few weeks after each month), replacing the year under way's asset. Labelling a pull request `pilot-merra2` tries it on February 2021.
+
+```bash
+gh workflow run merra2.yml -f years=all
 ```
 
 ## Development

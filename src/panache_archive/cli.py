@@ -1,5 +1,5 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
-`era5-build` and `mirror`, as the workflows run them."""
+`era5-build`, `merra2-plan`, `merra2-build` and `mirror`, as the workflows run them."""
 
 import argparse
 import asyncio
@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from panache_archive import ads, check, era5, mirror, plan, supervise
+from panache_archive import ads, check, era5, merra2, mirror, plan, supervise
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
 from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Variable
@@ -61,8 +61,11 @@ def _check(args: argparse.Namespace) -> int:
     agree = True
     for asset in args.assets:
         path = Path(asset)
-        if read_metadata(path).get("source") == "era5":
+        source = read_metadata(path).get("source")
+        if source == "era5":
             comparisons = era5.compare(path, get=check.http_get)
+        elif source == "merra2":
+            comparisons = merra2.compare(path, fetch=merra2.token_fetch(_earthdata_token()))
         else:
             comparisons = check.compare(path, get=check.http_get)
         report = check.render(path.name, comparisons)
@@ -112,6 +115,35 @@ def _era5_build(args: argparse.Namespace) -> int:
 async def _era5_build_with_bucket(job: era5.Era5Job, out: Path) -> Path:
     async with era5.HttpBucket() as bucket:
         return await era5.build(job, out, bucket)
+
+
+def _merra2_plan(args: argparse.Namespace) -> int:
+    built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
+    years = plan.parse_years(args.years)
+    today = date.today()
+    wanted = sorted(years or range(merra2.FIRST_YEAR, today.year + 1))
+    fetch = merra2.token_fetch(_earthdata_token())
+    jobs, superseded = merra2.plan(wanted, built, today, fetch)
+    print(
+        json.dumps([{"asset": j.asset_name, "year": j.year, "months": j.months[-1]} for j in jobs])
+    )
+    if args.superseded:
+        Path(args.superseded).write_text("\n".join(superseded), encoding="utf-8")
+    return 0
+
+
+def _merra2_build(args: argparse.Namespace) -> int:
+    job = merra2.Merra2Job(year=args.year, months=_months(args.months))
+    print(merra2.build(job, Path(args.out), merra2.token_fetch(_earthdata_token())))
+    return 0
+
+
+def _earthdata_token() -> str:
+    """NASA's Earthdata Login token, from `EARTHDATA_TOKEN` (the Actions secret of that name)."""
+    token = os.environ.get("EARTHDATA_TOKEN", "")
+    if not token:
+        raise SystemExit("EARTHDATA_TOKEN is not set: NASA would refuse MERRA-2's files")
+    return token
 
 
 def _mirror(args: argparse.Namespace) -> int:
@@ -197,6 +229,22 @@ def _parser() -> argparse.ArgumentParser:
     era5_building.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
     era5_building.add_argument("--out", default="dist", help="where the asset is written")
     era5_building.set_defaults(run=_era5_build)
+
+    merra2_planning = commands.add_parser(
+        "merra2-plan", help="print the MERRA-2 assets still missing"
+    )
+    merra2_planning.add_argument("--years", default="all", help="`all`, a year, or a span")
+    merra2_planning.add_argument("--built", help="a file listing the assets already built")
+    merra2_planning.add_argument("--superseded", help="where to list the assets to delete")
+    merra2_planning.set_defaults(run=_merra2_plan)
+
+    merra2_building = commands.add_parser(
+        "merra2-build", help="build one MERRA-2 asset from NASA's Cloud OPeNDAP"
+    )
+    merra2_building.add_argument("--year", required=True, type=int)
+    merra2_building.add_argument("--months", default="all", help="`all`, a month, or a span: 1-9")
+    merra2_building.add_argument("--out", default="dist", help="where the asset is written")
+    merra2_building.set_defaults(run=_merra2_build)
 
     mirroring = commands.add_parser(
         "mirror", help="mirror the whole domain's release on Hugging Face"
