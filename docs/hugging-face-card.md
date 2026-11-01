@@ -15,10 +15,11 @@ tags:
 
 Daily air quality over the whole CAMS Europe domain (30 to 72° N, 25° W to 45° E, 0.1° cells) from 2013, summed up from the hourly **CAMS European air quality reanalyses**. It is built for [Panache](https://github.com/AdrienJKTH/panache-archive), a tool that explains pollution episodes at a place: was a day unusual, and why?
 
-This dataset is a **mirror** of three GitHub releases of [AdrienJKTH/panache-archive](https://github.com/AdrienJKTH/panache-archive), where the assets are built on GitHub Actions and checked. Its files are the very same, one folder per release:
+This dataset is a **mirror** of four GitHub releases of [AdrienJKTH/panache-archive](https://github.com/AdrienJKTH/panache-archive), where the assets are built on GitHub Actions and checked. Its files are the very same, one folder per release:
 - [`cams-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/cams-europe-v1): air quality, described below;
 - [`era5-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/era5-europe-v1): the daily weather of ERA5 over the same domain at 0.25° (169 by 281 points), one file per year such as `era5-2021.cells`, nine statistics in this order: `temperature_2m_mean` (°C, the grid's, not corrected for altitude), `relative_humidity_2m_mean` (%), `wind_speed_10m_mean` (m/s), `wind_direction_10m_dominant` (°), `pressure_msl_mean` (hPa), `precipitation_sum` (mm, the 24 hours ending in the day), `shortwave_radiation_sum` (MJ/m²), `cloud_cover_mean` (%) and `boundary_layer_height` (m). One point a frame. Built from Open-Meteo's public copy of ERA5 (DOI [10.24381/cds.adbb2d47](https://doi.org/10.24381/cds.adbb2d47)); weather data by [Open-Meteo.com](https://open-meteo.com/) (CC-BY 4.0).
 - [`merra2-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/merra2-europe-v1): NASA's MERRA-2 aerosols over the same domain at 0.5° by 0.625° (85 by 113 cells, version 2 of the format: the header's two steps are float32 at bytes 32 and 36), one file per year such as `merra2-2021.cells` (the year under way as `merra2-2026-01-09.cells`), three statistics in this order: `DUSMASS`, `OCSMASS` and `BCSMASS`, UTC daily means in μg/m³. One cell a frame. Source: GMAO (2015), MERRA-2 tavg1_2d_aer_Nx V5.12.4, GES DISC, DOI [10.5067/KLICLTZ8EM9D](https://doi.org/10.5067/KLICLTZ8EM9D).
+- [`maps-europe-v1/`](https://github.com/AdrienJKTH/panache-archive/releases/tag/maps-europe-v1): Panache's map colourings over the same domain on CAMS's grid since 2020, one file per colouring and year such as `map-causes-2021.days`: each cell's EAQI band (`eaqi`, 1 to 6), how unusual it is for the season (`unusual`, 1 for p5 or less to 7 for p99 or more) and the mechanism Panache's verdict finds (`causes`, 3 to 12; 1 not in an episode, 2 none standing out), 0 for no class. A 64-byte header (`PANDAYS1`; south and west edges, cells per degree, rows, columns, first day, days, step), an offset table of one `uint64` per day plus one, then one zstd frame a day of uint16 classes with their bytes split by weight, then JSON with each day's cells per class. The CAMS reanalysis has no cell north of 70° N before 2018.
 
 ## What it holds
 
@@ -32,7 +33,7 @@ One file per variable and year, such as `cams-europe-v1/cams-pm10-2021-validated
 - **Statistics**: the UTC daily mean, null with fewer than 18 hours. Ozone also has its daily maximum 8-hour mean (EU Directive 2008/50/EC).
 - **Source**: the ensemble median at the surface. The validated reanalysis where it exists; the interim one after it (`-interim` in the name), replaced once the validated stream covers the year.
 - **Values**: rounded to 0.01 μg/m³.
-- **Grids**: 420 by 700 cells centred on x.x5° since 2020; 421 by 701 centred on x.x0° until 2019. Each file holds its year's own grid.
+- **Grids**: 420 by 700 cells centred on x.x5° since 2020; 421 by 701 centred on x.x0° in 2018 and 2019, and 401 by 701 (30 to 70° N) until 2017. Each file holds its year's own grid.
 
 ## The `.cells` format
 

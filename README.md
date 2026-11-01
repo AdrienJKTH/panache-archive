@@ -38,7 +38,7 @@ Such a file is too large to read whole for one place, so it is laid out to give 
 
 - **Statistics**: the daily mean, and for ozone the daily mean then the highest 8-hour mean, in one file.
 - **Reading one cell** (`panache_archive.cells.read_cell`, or from afar with HTTP ranges): read the 16 bytes of its frame's offsets, then the frame; check its 16 first bytes; decompress; un-split; pick the cell.
-- **The two grids** are kept as for France: each file holds its year's own grid, given by its header.
+- **The two grids** are kept as for France: each file holds its year's own grid, given by its header. Until 2017 the reanalysis stops at 70° N: its files of 2013-2017 have 401 rows, not 421 (Panache's D78).
 
 ## How it is built
 
@@ -69,7 +69,7 @@ Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps 
 
 ### The Hugging Face mirror
 
-The whole domain's releases `cams-europe-v1`, `era5-europe-v1` and `merra2-europe-v1` are mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (one folder per release), which Panache reads when GitHub fails (its decisions D66, D71 and D72). After each CAMS, ERA5 or MERRA-2 run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
+The whole domain's releases `cams-europe-v1`, `era5-europe-v1`, `merra2-europe-v1` and `maps-europe-v1` are mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (one folder per release), which Panache reads when GitHub fails (its decisions D66, D71 and D72). After each CAMS, ERA5, MERRA-2 or Domain maps run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
 
 - uploads every asset the mirror lacks, or holds with another size or SHA-256 (in batches of at most 4 GB, one commit each, each file checked against the release's digest);
 - deletes the files the release no longer holds (an interim year replaced by its validated twin);
@@ -132,6 +132,24 @@ What Panache's downscaling of CAMS to 1 km over France learns from and maps with
 
 - `stations-fr-<pollutant>.parquet` (`pm2_5`, `nitrogen_dioxide`): one row per sampling point and UTC day with at least 18 valid hours (`sampling_point`, `day`, `mean` in µg/m³, `hours`), from the EEA's validated hours (E1a), 2013 to the last complete year. The files' hours are UTC+1. Each point's station, position, altitude, type and area, from the EEA's metadata, are in the asset's `panache_archive` metadata (`points`).
 - `static-fr-1km.npz`: `population` (inhabitants/km², GHS-POP 2020), `built_up` (share of the cell, GHS-BUILT-S 2020) and `elevation` (m, Copernicus DEM GLO-90 averaged; 0 or NaN at sea) and `land` (share of the cell on land, Natural Earth 1:10m land without its lakes) on a 1/120° grid over France's box (1,260 by 1,860 cells, twelve by twelve per CAMS cell, rows from the south), with `lats`, `lons` and `about` (JSON). GDAL cuts the sources onto the grid (`scripts/static-layers.sh`).
+
+## Domain maps
+
+Panache's map colourings over the whole CAMS Europe domain (Panache's D78), every day from 2013, in the release `maps-europe-v1`: one `map-<layer>-<year>.days` file per colouring and year, ~2 to 20 KB a day, read a day at a time over HTTP ranges (the format of the downscaled maps below, classes stored at a step of 1):
+
+- `eaqi`: the EAQI band of the day's worst pollutant, 1 to 6;
+- `unusual`: the most unusual of PM2.5, PM10 and ozone's 8-hour maximum for the season, 1 (up to p5) to 7 (p99 or more);
+- `causes`: the leading mechanism of Panache's verdict on the cell's day, 3 to 12; 1 not in an episode, 2 none standing out.
+
+0 means no class. Each file's JSON counts each day's cells per class.
+
+- **Built by Panache's own backend** (`panache-domain-maps`, checked out at the commit the run is given with the deploy key `PANACHE_DEPLOY_KEY`), from this repository's releases alone: nothing comes from the ADS.
+- The [`Domain maps`](.github/workflows/maps.yml) workflow shares the 420 rows out among 12 jobs. Each reads its rows of `cams-europe-v1` and `era5-europe-v1` over HTTP ranges (~1 GB), writes them as France's Parquet assets and weighs every day by the rules of Panache's map of France, which it then matches exactly. A last job stacks the bands and publishes them, and the mirror copies them to Hugging Face. With `pilot`, one band is built as the run's artifact and nothing is published.
+
+```bash
+gh workflow run maps.yml -f panache=main -f pilot=6 -f years=2021
+gh workflow run maps.yml -f panache=main -f years=all
+```
 
 ## Downscaled maps
 
