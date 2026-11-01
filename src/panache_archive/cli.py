@@ -98,11 +98,15 @@ def _supervise(args: argparse.Namespace) -> int:
 
 def _era5_plan(args: argparse.Namespace) -> int:
     built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
-    last = era5.last_complete_year(date.today())
+    end = era5.data_end(check.http_get)
     years = plan.parse_years(args.years)
-    wanted = sorted(y for y in (years or range(era5.FIRST_YEAR, last + 1)) if y <= last)
-    jobs = era5.missing_years(wanted, built, Domain(args.domain))
-    print(json.dumps([{"asset": job.asset_name, "year": job.year} for job in jobs]))
+    wanted = sorted(years or range(era5.FIRST_YEAR, end.year + 1))
+    jobs, superseded = era5.plan(wanted, built, end, Domain(args.domain))
+    print(
+        json.dumps([{"asset": j.asset_name, "year": j.year, "months": j.months[-1]} for j in jobs])
+    )
+    if args.superseded:
+        Path(args.superseded).write_text("\n".join(superseded), encoding="utf-8")
     return 0
 
 
@@ -222,6 +226,7 @@ def _parser() -> argparse.ArgumentParser:
     era5_planning.add_argument("--years", default="all", help="`all`, a year, or a span")
     era5_planning.add_argument("--built", help="a file listing the assets already built")
     era5_planning.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
+    era5_planning.add_argument("--superseded", help="where to list the assets to delete")
     era5_planning.set_defaults(run=_era5_plan)
 
     era5_building = commands.add_parser("era5-build", help="build one ERA5 year from the bucket")

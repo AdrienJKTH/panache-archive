@@ -1,14 +1,16 @@
 name: ERA5
 run-name: >-
-  ${{ github.event_name == 'workflow_dispatch' && format('ERA5 {0}', inputs.domain)
-  || github.event.pull_request.title }}
+  ${{ github.event_name == 'pull_request' && github.event.pull_request.title
+  || format('ERA5 {0}', inputs.domain || 'europe') }}
 
 # Builds the archive's ERA5 assets: a domain's daily weather for each year, read from Open-Meteo's
 # public bucket over HTTPS (no account, no quota; ~20 MB of compressed hours per variable and
 # year for France, ~17 times that for the whole domain), published to the domain's release
 # (era5-v1, or era5-europe-v1 for the whole domain) and checked against Open-Meteo's archive API,
-# and the whole domain's against France's assets too. A run builds only the years the release
-# lacks. Labelling a pull request `pilot-era5` tries its code on January 2021 first.
+# and the whole domain's against France's assets too. A run builds only the assets the release
+# lacks. The whole domain also keeps the year under way, as its months out so far: each Monday
+# adds the months the bucket completed since, replacing the year's earlier part (Panache's D75).
+# Labelling a pull request `pilot-era5` tries its code on January 2021 first.
 
 on:
   workflow_dispatch:
@@ -19,37 +21,44 @@ on:
         options: [france, europe]
         default: france
       years:
-        description: "`all` (2013 to the last complete year), a year, or a span such as 2013-2025"
+        description: "`all` (2013 to now), a year, or a span such as 2013-2025"
         default: all
+  schedule:
+    - cron: "43 6 * * 1"
   pull_request:
     types: [labeled]
 
 concurrency:
   group: >-
-    era5-${{ github.event_name == 'workflow_dispatch' && format('build-{0}', inputs.domain)
-    || github.ref }}
+    era5-${{ github.event_name == 'pull_request' && github.ref
+    || format('build-{0}', inputs.domain || 'europe') }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 env:
-  DOMAIN: ${{ inputs.domain || 'france' }}
-  RELEASE: ${{ inputs.domain == 'europe' && 'era5-europe-v1' || 'era5-v1' }}
-  NOTES: ${{ inputs.domain == 'europe' && 'docs/era5-europe-release.md' || 'docs/era5-release.md' }}
+  DOMAIN: ${{ inputs.domain || (github.event_name == 'schedule' && 'europe') || 'france' }}
+  RELEASE: >-
+    ${{ (inputs.domain == 'europe' || github.event_name == 'schedule') && 'era5-europe-v1'
+    || 'era5-v1' }}
+  NOTES: >-
+    ${{ (inputs.domain == 'europe' || github.event_name == 'schedule')
+    && 'docs/era5-europe-release.md' || 'docs/era5-release.md' }}
   TITLE: >-
-    ${{ inputs.domain == 'europe' && 'ERA5 daily weather over the whole domain'
-    || 'ERA5 daily weather over France' }}
+    ${{ (inputs.domain == 'europe' || github.event_name == 'schedule')
+    && 'ERA5 daily weather over the whole domain' || 'ERA5 daily weather over France' }}
 
 jobs:
   plan:
     name: Plan
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      superseded: ${{ steps.plan.outputs.superseded }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -70,12 +79,13 @@ jobs:
       - name: Plan
         id: plan
         env:
-          YEARS: ${{ inputs.years }}
+          YEARS: ${{ inputs.years || 'all' }}
         run: |
           matrix=$(uv run panache-archive era5-plan --years "$YEARS" --built built.txt \
-            --domain "$DOMAIN")
+            --domain "$DOMAIN" --superseded superseded.txt)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "$matrix" | jq -r '"\(length) years to build"' >> "$GITHUB_STEP_SUMMARY"
+          echo "superseded=$(paste -sd, superseded.txt)" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) assets to build"' >> "$GITHUB_STEP_SUMMARY"
 
   build:
     name: ${{ matrix.asset }}
@@ -100,7 +110,10 @@ jobs:
       - name: Build
         env:
           YEAR: ${{ matrix.year }}
-        run: uv run panache-archive era5-build --year "$YEAR" --domain "$DOMAIN" --out dist
+          MONTHS: ${{ matrix.months }}
+        run: >
+          uv run panache-archive era5-build --year "$YEAR" --months "1-$MONTHS"
+          --domain "$DOMAIN" --out dist
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,6 +131,23 @@ jobs:
         run: >
           uv run panache-archive check dist/era5-* --twins twins
           --summary "$GITHUB_STEP_SUMMARY"
+
+  clean:
+    name: Delete the superseded parts of a year
+    needs: [plan, build]
+    if: needs.plan.outputs.superseded != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Delete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPERSEDED: ${{ needs.plan.outputs.superseded }}
+        run: |
+          for asset in ${SUPERSEDED//,/ }; do
+            gh release delete-asset "$RELEASE" "$asset" --yes --repo "$GITHUB_REPOSITORY"
+          done
 
   pilot:
     name: Pilot, January 2021

@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -127,8 +127,9 @@ def test_supervise_writes_its_decision(
 
 
 def test_era5_plan_lists_the_missing_years(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(era5, "data_end", lambda _get: datetime(2026, 10, 27, tzinfo=UTC))
     built = tmp_path / "built.txt"
     built.write_text("era5-2013.parquet\n", encoding="utf-8")
 
@@ -136,9 +137,26 @@ def test_era5_plan_lists_the_missing_years(
 
     assert code == 0
     assert json.loads(capsys.readouterr().out) == [
-        {"asset": "era5-2014.parquet", "year": 2014},
-        {"asset": "era5-2015.parquet", "year": 2015},
+        {"asset": "era5-2014.parquet", "year": 2014, "months": 12},
+        {"asset": "era5-2015.parquet", "year": 2015, "months": 12},
     ]
+
+
+def test_era5_plan_of_the_whole_domain_lists_what_the_year_under_way_supersedes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(era5, "data_end", lambda _get: datetime(2026, 10, 27, tzinfo=UTC))
+    built, superseded = tmp_path / "built.txt", tmp_path / "superseded.txt"
+    built.write_text("era5-2025.cells\nera5-2026-01-08.cells\n", encoding="utf-8")
+
+    asked_for = ["era5-plan", "--built", str(built), "--domain", "europe"]
+    code = cli.main([*asked_for, "--superseded", str(superseded)])
+
+    assert code == 0
+    planned = json.loads(capsys.readouterr().out)
+    assert planned[-1] == {"asset": "era5-2026-01-09.cells", "year": 2026, "months": 9}
+    assert [p["asset"] for p in planned[:-1]] == [f"era5-{y}.cells" for y in range(2013, 2025)]
+    assert superseded.read_text(encoding="utf-8") == "era5-2026-01-08.cells"
 
 
 def test_era5_build_goes_through_the_bucket(

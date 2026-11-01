@@ -311,21 +311,73 @@ def test_a_cams_asset_is_not_compared_as_era5(tmp_path: Path) -> None:
         era5.compare(path, [LYON])
 
 
+END = datetime(2026, 10, 27, tzinfo=UTC)
+"""Where the bucket's hours stopped on 1 November 2026, from its `meta.json`."""
+
+
 @pytest.mark.parametrize(
-    ("today", "year"),
-    [(date(2026, 10, 17), 2025), (date(2026, 1, 9), 2024), (date(2026, 1, 10), 2025)],
+    ("year", "end", "months"),
+    [
+        (2025, END, 12),
+        (2026, END, 9),
+        (2027, END, 0),
+        # A month waits for the next one's first hour (its last day's rain), and a day more.
+        (2026, datetime(2026, 10, 1, 23, tzinfo=UTC), 8),
+        (2026, datetime(2026, 10, 2, tzinfo=UTC), 9),
+        (2025, datetime(2026, 1, 1, 12, tzinfo=UTC), 11),
+    ],
 )
-def test_the_last_complete_year_waits_for_era5_to_catch_up(today: date, year: int) -> None:
-    assert era5.last_complete_year(today) == year
+def test_the_months_out_follow_the_buckets_end(year: int, end: datetime, months: int) -> None:
+    assert era5.months_out(year, end) == months
+
+
+def test_the_buckets_end_is_read_from_its_meta() -> None:
+    def get(url: str) -> bytes:
+        assert url == era5.META_URL
+        return json.dumps({"data_end_time": 1793059200, "chunk_time_length": 504}).encode()
+
+    assert era5.data_end(get) == END
 
 
 def test_jobs_and_names() -> None:
     assert Era5Job(2021).asset_name == "era5-2021.parquet"
     assert Era5Job(2024, (2,)).days == 29
     assert Era5Job(2021).days == 365
-    assert [j.year for j in era5.missing_years([2020, 2021], {"era5-2020.parquet"})] == [2021]
     with pytest.raises(ValueError, match="months"):
         Era5Job(2021, (3, 1))
+
+
+def test_france_is_planned_in_whole_years() -> None:
+    jobs, superseded = era5.plan([2024, 2025, 2026], {"era5-2024.parquet"}, END)
+
+    assert [j.asset_name for j in jobs] == ["era5-2025.parquet"]
+    assert superseded == []
+
+
+def test_the_whole_domain_adds_the_year_under_way_as_its_months_out() -> None:
+    built = {"era5-2025.cells", "era5-2026-01-08.cells"}
+
+    jobs, superseded = era5.plan([2025, 2026], built, END, Domain.EUROPE)
+
+    assert jobs == [Era5Job(2026, tuple(range(1, 10)), Domain.EUROPE)]
+    assert jobs[0].asset_name == "era5-2026-01-09.cells"
+    assert superseded == ["era5-2026-01-08.cells"]
+
+
+def test_a_year_once_whole_replaces_its_parts() -> None:
+    built = {"era5-2026-01-11.cells", "era5-2026-01-10.cells", "era5-2026-01-11.parquet"}
+    end = datetime(2027, 1, 6, tzinfo=UTC)
+
+    jobs, superseded = era5.plan([2026, 2027], built, end, Domain.EUROPE)
+
+    assert [j.asset_name for j in jobs] == ["era5-2026.cells"]
+    assert superseded == ["era5-2026-01-10.cells", "era5-2026-01-11.cells"]
+
+
+def test_nothing_to_do_once_the_month_is_built() -> None:
+    built = {"era5-2026-01-09.cells"}
+
+    assert era5.plan([2026], built, END, Domain.EUROPE) == ([], [])
 
 
 def test_the_http_file_system_takes_omfiles_argument_names(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -472,9 +524,8 @@ def test_bands_change_nothing_and_must_hold_a_row(tmp_path: Path) -> None:
 
 def test_whole_domain_jobs_are_named_cells() -> None:
     assert Era5Job(2021, domain=Domain.EUROPE).asset_name == "era5-2021.cells"
-    assert [
-        j.asset_name for j in era5.missing_years([2020, 2021], {"era5-2020.cells"}, Domain.EUROPE)
-    ] == ["era5-2021.cells"]
+    jobs, _ = era5.plan([2020, 2021], {"era5-2020.cells"}, END, Domain.EUROPE)
+    assert [j.asset_name for j in jobs] == ["era5-2021.cells"]
 
 
 def test_rain_is_checked_on_the_api_hours_over_the_archives_day(asset: Path) -> None:
