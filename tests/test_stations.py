@@ -91,6 +91,63 @@ def test_days_need_18_valid_hours() -> None:
     assert found.days.astype(str).tolist() == ["2021-02-06"]
 
 
+def test_ozone_takes_the_day_s_highest_8_hour_mean() -> None:
+    # UTC hours 0-11 at 50, 12-19 at 100, 20-23 at 50: the mean ending at 20:00 is the highest.
+    rows = hours(datetime(2021, 7, 1, 1), [50.0] * 12 + [100.0] * 8 + [50.0] * 4)
+
+    found = stations.daily_means(station_file("SPO-FR01011_7", rows), stations.MAX_8H_MEAN)
+
+    assert found.days.astype(str).tolist() == ["2021-07-01"]
+    assert found.means.tolist() == [100.0]
+    assert found.hours.tolist() == [24]
+
+
+def test_ozone_days_need_18_valid_8_hour_means_and_gaps_stay_missing() -> None:
+    # 1 July whole; 2 July missing; 3 July whole, its earliest means without the evening before;
+    # 4 July's 12 hours give too few means.
+    rows = (
+        hours(datetime(2021, 7, 1, 1), [40.0] * 24)
+        + hours(datetime(2021, 7, 3, 1), [60.0] * 24)
+        + hours(datetime(2021, 7, 4, 1), [80.0] * 12)
+    )
+
+    found = stations.daily_means(station_file("SPO-FR01011_7", rows), stations.MAX_8H_MEAN)
+
+    assert found.days.astype(str).tolist() == ["2021-07-01", "2021-07-03"]
+    assert found.means.tolist() == [40.0, 60.0]
+
+
+def test_a_file_without_valid_hours_has_no_ozone_day() -> None:
+    rows = hours(datetime(2021, 7, 1, 1), [50.0] * 24, validity=-1)
+
+    found = stations.daily_means(station_file("SPO-FR01011_7", rows), stations.MAX_8H_MEAN)
+
+    assert found.days.size == found.means.size == found.hours.size == 0
+
+
+def test_an_unknown_statistic_is_refused() -> None:
+    rows = hours(datetime(2021, 7, 1, 1), [50.0] * 24)
+
+    with pytest.raises(ValueError, match="no daily statistic"):
+        stations.daily_means(station_file("SPO-FR01011_7", rows), "median")
+
+
+@pytest.mark.parametrize(
+    ("pollutant", "notation", "code", "statistic"),
+    [
+        (Pollutant.PM2_5, "PM2.5", "6001", "mean"),
+        (Pollutant.NITROGEN_DIOXIDE, "NO2", "8", "mean"),
+        (Pollutant.PM10, "PM10", "5", "mean"),
+        (Pollutant.OZONE, "O3", "7", "max_8h_mean"),
+        (Pollutant.SULPHUR_DIOXIDE, "SO2", "1", "mean"),
+    ],
+)
+def test_each_index_pollutant_has_its_names_and_statistic(
+    pollutant: Pollutant, notation: str, code: str, statistic: str
+) -> None:
+    assert (pollutant.notation, pollutant.code, pollutant.statistic) == (notation, code, statistic)
+
+
 def test_other_units_aggregations_and_gaps_are_left_out() -> None:
     first = datetime(2021, 2, 6, 1)
     rows = [
