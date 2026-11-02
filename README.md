@@ -69,7 +69,7 @@ Its decisions are `panache-archive supervise`'s, tested like the rest; it keeps 
 
 ### The Hugging Face mirror
 
-The whole domain's releases `cams-europe-v1`, `era5-europe-v1`, `merra2-europe-v1` and `maps-europe-v1` are mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (one folder per release), which Panache reads when GitHub fails (its decisions D66, D71 and D72). After each CAMS, ERA5, MERRA-2 or Domain maps run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
+The whole domain's releases `cams-europe-v1`, `era5-europe-v1`, `merra2-europe-v1` and `maps-europe-v1`, and the downscaling's `downscaling-v1`, `downscaled-v1` and `fine-v1`, are mirrored on Hugging Face, in the public dataset [`adrien4916/air_qual_indicators`](https://huggingface.co/datasets/adrien4916/air_qual_indicators) (one folder per release), which Panache reads when GitHub fails (its decisions D66, D71 and D72). After each CAMS, ERA5, MERRA-2, Domain maps, Downscaling inputs, Downscaled maps or Fine layers run and every three hours, the [`Mirror`](.github/workflows/mirror.yml) workflow (`panache-archive mirror`, through `huggingface_hub`):
 
 - uploads every asset the mirror lacks, or holds with another size or SHA-256 (in batches of at most 4 GB, one commit each, each file checked against the release's digest);
 - deletes the files the release no longer holds (an interim year replaced by its validated twin);

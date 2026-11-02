@@ -9,7 +9,8 @@ name: Mirror
 
 on:
   workflow_run:
-    workflows: [CAMS, ERA5, MERRA-2, Domain maps]
+    workflows:
+      [CAMS, ERA5, MERRA-2, Domain maps, Downscaling inputs, Downscaled maps, Fine layers]
     types: [completed]
   schedule:
     - cron: "17 */3 * * *"
@@ -39,7 +40,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          for release in cams-europe-v1 era5-europe-v1 merra2-europe-v1 maps-europe-v1; do
+          for release in cams-europe-v1 era5-europe-v1 merra2-europe-v1 maps-europe-v1 \
+              downscaling-v1 downscaled-v1 fine-v1; do
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release" > release.json \
               || echo '{"assets": []}' > release.json
             echo "**$release**: $(uv run panache-archive mirror --release release.json \
