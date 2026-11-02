@@ -153,10 +153,11 @@ gh workflow run maps.yml -f panache=main -f years=all
 
 ## Downscaled maps
 
-Daily means of PM2.5 and NO₂ at 1 km over the land of France's box, 2013 to the last complete year (Panache's D74), in the release `downscaled-v1`: one `downscaled-<pollutant>-<year>.days` file per pollutant and year (~1 MB a day, read a day at a time over HTTP ranges), and the two models (`downscaling-<pollutant>.lgb.txt`).
+Daily values of the European Air Quality Index's pollutants at 1 km over the land of France's box (PM2.5 and NO₂ first, then PM10, ozone's daily maximum 8-hour mean and SO₂), 2013 to the last complete year (Panache's D74), in the release `downscaled-v1`: one `downscaled-<pollutant>-<year>.days` file per pollutant and year (~1 MB a day, read a day at a time over HTTP ranges), and each pollutant's model (`downscaling-<pollutant>.lgb.txt`).
 
 - **Built by Panache's own backend** (`panache-downscaling-maps`, checked out at the commit the run is given with the read-only deploy key `PANACHE_DEPLOY_KEY`, Panache's repository being private): each pollutant's model is trained once on the EEA's background stations (release `downscaling-v1`), then each year's days are predicted cell by cell from the archive's CAMS (`cams-v1`), ERA5 (`era5-v1`) and the 1 km fixed layers, ~25 s a day.
-- The [`Downscaled maps`](.github/workflows/downscaled.yml) workflow builds the pollutant-years the release lacks, one job each; with `days`, a pilot builds each year's first days as the run's artifacts.
+- The [`Downscaling experiment`](.github/workflows/experiment.yml) workflow measures a pollutant's model against CAMS alone at stations it never saw, before its maps are built.
+- The [`Downscaled maps`](.github/workflows/downscaled.yml) workflow trains the models and builds the pollutant-years the release lacks, among the pollutants asked, one job each; a published model is never replaced. With `days`, a pilot builds each year's first days as the run's artifacts.
 
 ```bash
 gh workflow run downscaled.yml -f panache=main -f years=2021 -f days=3

@@ -10,7 +10,10 @@ dir=$1
 year=$2
 pattern=$([[ $year == all ]] && echo "*" || echo "$year")
 
-species=(pm2_5 pm10 nitrogen_dioxide ozone carbon_monoxide secondary_inorganic_aerosol dust)
+species=(
+  pm2_5 pm10 nitrogen_dioxide ozone sulphur_dioxide carbon_monoxide secondary_inorganic_aerosol
+  dust
+)
 for name in "${species[@]}"; do
   # A species CAMS lacks that year (dust before 2018) matches no asset: its feature stays missing.
   gh release download cams-v1 --pattern "cams-$name-$pattern-*.parquet" --dir "$dir/cams" \
