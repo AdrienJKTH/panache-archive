@@ -1,13 +1,22 @@
 name: Downscaling inputs
 
 # Builds what Panache's downscaling learns from and maps with (Panache's D74) into the release
-# downscaling-v1: each pollutant's daily means at France's stations, from the EEA's validated
-# hours (~1.3 GB of files, read and dropped), and the 1 km fixed layers (GHS-POP, GHS-BUILT-S, the
-# Copernicus DEM and Natural Earth's land, cut by GDAL). Labelling a pull request
-# `pilot-downscaling` builds them as the run's artifacts, without touching the release.
+# downscaling-v1: each pollutant's daily values at France's stations, from the EEA's validated
+# hours (~1.3 GB of files a pollutant, read and dropped), and the 1 km fixed layers (GHS-POP,
+# GHS-BUILT-S, the Copernicus DEM and Natural Earth's land, cut by GDAL). A dispatch builds the
+# pollutants it is given, and the layers unless told not to. Labelling a pull request
+# `pilot-downscaling` builds them all as the run's artifacts, without touching the release.
 
 on:
   workflow_dispatch:
+    inputs:
+      pollutants:
+        description: "The pollutants' stations to build, a JSON list"
+        default: '["pm2_5", "nitrogen_dioxide", "pm10", "ozone", "sulphur_dioxide"]'
+      static:
+        description: "Build the 1 km fixed layers too"
+        type: boolean
+        default: true
   pull_request:
     types: [labeled]
 
@@ -52,7 +61,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pollutant: [pm2_5, nitrogen_dioxide]
+        pollutant: >-
+          ${{ fromJSON(inputs.pollutants
+          || '["pm2_5", "nitrogen_dioxide", "pm10", "ozone", "sulphur_dioxide"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -79,7 +90,8 @@ jobs:
     needs: release
     if: >
       always() && needs.release.result != 'failure'
-      && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'pilot-downscaling')
+      && ((github.event_name == 'workflow_dispatch' && inputs.static)
+      || github.event.label.name == 'pilot-downscaling')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:

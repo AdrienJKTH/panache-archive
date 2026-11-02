@@ -1,13 +1,15 @@
-"""Daily means at a country's monitoring stations, from the EEA's validated hours (E1a): the
+"""Daily values at a country's monitoring stations, from the EEA's validated hours (E1a): the
 measurements Panache's downscaling learns from (Panache's D74).
 
 The EEA's Air Quality Download Service lists, for a country, a pollutant and a period, one
 Parquet file per sampling point, each holding every validated hour since 2013 (~1.5 MB). Its list
 depends on the days asked (Panache's D70), so each year is listed and the lists are joined.
 
-Each file's valid hours are kept, and each UTC day with at least 18 of them becomes a daily mean,
-as CAMS's daily means and Panache's stations are made (Panache's D69). The files' hours start at
-UTC+1, whatever the station's own time zone (Panache's D70).
+Each file's valid hours are kept, and each UTC day becomes the statistic the European Air Quality
+Index classes the pollutant by (Panache's D43), by the rules the archive's CAMS days follow
+(`daily`, Panache's D69): the daily mean, from at least 18 valid hours; for ozone, the day's
+maximum 8-hour mean, from at least 18 valid 8-hour means of at least 6 hours each. The files'
+hours start at UTC+1, whatever the station's own time zone (Panache's D70).
 
 The EEA's station metadata give each sampling point its station, position, altitude, type
 (traffic, industrial, background) and area (urban, suburban, rural...). They are stored in the
@@ -34,6 +36,7 @@ from numpy.typing import NDArray
 
 from panache_archive import web
 from panache_archive.build import METADATA_KEY
+from panache_archive.daily import HOURS_PER_DAY, daily_max_8h_means
 
 DOWNLOAD_API: Final = "https://eeadmz1-downloads-api-appservice.azurewebsites.net"
 METADATA_URL: Final = "https://discomap.eea.europa.eu/map/fme/metadata/PanEuropean_metadata.csv"
@@ -66,10 +69,14 @@ type Read = Callable[[urllib.request.Request | str], bytes]
 
 
 class Pollutant(StrEnum):
-    """The pollutants downscaled, named as Panache's CAMS variables."""
+    """The pollutants downscaled, named as Panache's CAMS variables: the European Air Quality
+    Index's five."""
 
     PM2_5 = "pm2_5"
     NITROGEN_DIOXIDE = "nitrogen_dioxide"
+    PM10 = "pm10"
+    OZONE = "ozone"
+    SULPHUR_DIOXIDE = "sulphur_dioxide"
 
     @property
     def notation(self) -> str:
@@ -81,12 +88,28 @@ class Pollutant(StrEnum):
         """The EEA's pollutant code, the last part of `AirPollutantCode` in the metadata."""
         return _CODES[self]
 
+    @property
+    def statistic(self) -> str:
+        """The daily statistic, named as the archive's CAMS columns: the index's (D43)."""
+        return MAX_8H_MEAN if self is Pollutant.OZONE else MEAN
 
+
+MEAN: Final = "mean"
+MAX_8H_MEAN: Final = "max_8h_mean"
 _NOTATIONS: Final[Mapping[Pollutant, str]] = {
     Pollutant.PM2_5: "PM2.5",
     Pollutant.NITROGEN_DIOXIDE: "NO2",
+    Pollutant.PM10: "PM10",
+    Pollutant.OZONE: "O3",
+    Pollutant.SULPHUR_DIOXIDE: "SO2",
 }
-_CODES: Final[Mapping[Pollutant, str]] = {Pollutant.PM2_5: "6001", Pollutant.NITROGEN_DIOXIDE: "8"}
+_CODES: Final[Mapping[Pollutant, str]] = {
+    Pollutant.PM2_5: "6001",
+    Pollutant.NITROGEN_DIOXIDE: "8",
+    Pollutant.PM10: "5",
+    Pollutant.OZONE: "7",
+    Pollutant.SULPHUR_DIOXIDE: "1",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,15 +132,15 @@ class Point:
 
 @dataclass(frozen=True, slots=True)
 class PointDays:
-    """A sampling point's daily means."""
+    """A sampling point's daily values."""
 
     sampling_point: str
     days: NDArray[np.datetime64]
     """UTC days, ascending."""
     means: NDArray[np.float64]
-    """µg/m³."""
+    """The day's statistic, µg/m³: its mean, or ozone's maximum 8-hour mean."""
     hours: NDArray[np.int64]
-    """Valid hours behind each mean, 18 to 24."""
+    """Valid hours of the UTC day, 0 to 24 (18 at least for a mean)."""
 
 
 def list_files(
@@ -151,8 +174,9 @@ def list_files(
     return sorted(found)
 
 
-def daily_means(content: bytes) -> PointDays:
-    """A file's daily means: each UTC day with at least `MIN_HOURS` valid hours.
+def daily_means(content: bytes, statistic: str = MEAN) -> PointDays:
+    """A file's daily values: each UTC day's mean, from at least `MIN_HOURS` valid hours, or its
+    maximum 8-hour mean (`MAX_8H_MEAN`), from enough valid 8-hour means (`daily`).
 
     An hour the file holds twice counts once, with its first value.
     """
@@ -179,6 +203,10 @@ def daily_means(content: bytes) -> PointDays:
     days, index, counts = np.unique(
         hours.astype("datetime64[D]"), return_inverse=True, return_counts=True
     )
+    if statistic == MAX_8H_MEAN:
+        return _max_8h_means(sampling_point, hours, hourly, days, counts)
+    if statistic != MEAN:
+        raise ValueError(f"no daily statistic {statistic!r}")
     sums = np.bincount(index, weights=hourly, minlength=days.size)
     full = counts >= MIN_HOURS
     return PointDays(
@@ -186,6 +214,33 @@ def daily_means(content: bytes) -> PointDays:
         days=days[full],
         means=sums[full] / counts[full],
         hours=counts[full].astype(np.int64),
+    )
+
+
+def _max_8h_means(
+    sampling_point: str,
+    hours: NDArray[np.datetime64],
+    hourly: NDArray[np.float64],
+    days: NDArray[np.datetime64],
+    counts: NDArray[np.int64],
+) -> PointDays:
+    """Each day's maximum 8-hour mean, from the hours laid on a whole-day UTC series: the day
+    before the first one has no hours, so a gap before it reads as missing hours, never as 0."""
+    if not days.size:
+        return PointDays(sampling_point, days, np.array([]), np.array([], np.int64))
+    first = days[0].astype("datetime64[h]")
+    series = np.full(int((days[-1] - days[0]).astype(int) + 1) * HOURS_PER_DAY, np.nan)
+    series[(hours.astype("datetime64[h]") - first).astype(np.int64)] = hourly
+    maxima = daily_max_8h_means(series[:, np.newaxis])[:, 0]
+    every_day = days[0] + np.arange(maxima.size)
+    found = ~np.isnan(maxima)
+    hours_by_day = np.zeros(maxima.size, np.int64)
+    hours_by_day[(days - days[0]).astype(np.int64)] = counts
+    return PointDays(
+        sampling_point=sampling_point,
+        days=every_day[found],
+        means=maxima[found],
+        hours=hours_by_day[found],
     )
 
 
@@ -233,8 +288,9 @@ def build(
     read: Read = web.read,
     downloads: int = DOWNLOADS,
 ) -> Path:
-    """Every daily mean of `pollutant` at `country`'s stations from 2013 to `last_year`, as one
-    Parquet asset: one row per sampling point and day, the points in its metadata.
+    """Every daily value of `pollutant` at `country`'s stations from 2013 to `last_year`, as
+    one Parquet asset: one row per sampling point and day, the points in its metadata. The column
+    `mean` holds the pollutant's statistic, named in the metadata.
 
     Points the metadata do not describe are left out, since a mean without a position is of no
     use to a map; they are logged.
@@ -243,7 +299,7 @@ def build(
     urls = list_files(country, pollutant, years, read=read)
     points = read_points(read(_get(METADATA_URL)), country, pollutant)
     with ThreadPoolExecutor(max_workers=downloads) as pool:
-        found = list(pool.map(lambda url: daily_means(read(_get(url))), urls))
+        found = list(pool.map(lambda url: daily_means(read(_get(url)), pollutant.statistic), urls))
     last_day = np.datetime64(date(last_year, 12, 31), "D")
     kept = [_until(p, last_day) for p in found]
     unknown = sorted(p.sampling_point for p in kept if p.sampling_point not in points)
@@ -258,7 +314,7 @@ def build(
         "country": country,
         "pollutant": str(pollutant),
         "unit": "µg/m³",
-        "statistic": "mean",
+        "statistic": pollutant.statistic,
         "min_hours": MIN_HOURS,
         "first_year": FIRST_YEAR,
         "last_year": last_year,
