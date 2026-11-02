@@ -1,13 +1,14 @@
 name: Downscaled maps
 
-# Builds Panache's daily maps of PM2.5 and NO₂ at 1 km over France (Panache's D74) into the
-# release downscaled-v1: one `.days` file per pollutant and year, ~1 MB a day. Panache's own
-# backend builds them (`panache-downscaling-maps`, checked out at the commit asked with the deploy
-# key PANACHE_DEPLOY_KEY, since Panache's repository is private): it trains each
-# pollutant's model once on the EEA's background stations (release downscaling-v1), then predicts
-# every land cell of every day, ~25 s a day, from the archive's CAMS (cams-v1) and ERA5 (era5-v1).
-# A run builds the pollutants and years the release lacks; with `days`, a pilot builds each year's
-# first days as the run's artifacts, without touching the release's maps.
+# Builds Panache's daily maps of the European Air Quality Index's pollutants at 1 km over France
+# (Panache's D74) into the release downscaled-v1: one `.days` file per pollutant and year, ~1 MB a
+# day. Panache's own backend builds them (`panache-downscaling-maps`, checked out at the commit
+# asked with the deploy key PANACHE_DEPLOY_KEY, since Panache's repository is private): it trains
+# each pollutant's model once on the EEA's background stations (release downscaling-v1), then
+# predicts every land cell of every day, ~25 s a day, from the archive's CAMS (cams-v1) and ERA5
+# (era5-v1). A run trains the models and builds the pollutant-years the release lacks, among the
+# pollutants asked; with `days`, a pilot builds each year's first days as the run's artifacts,
+# without touching the release's maps.
 
 on:
   workflow_dispatch:
@@ -21,6 +22,9 @@ on:
       days:
         description: "Only each year's first days (a pilot); empty for whole years"
         default: ""
+      pollutants:
+        description: "The pollutants to map, a JSON list"
+        default: '["pm2_5", "nitrogen_dioxide", "pm10", "ozone", "sulphur_dioxide"]'
 
 concurrency:
   group: downscaled
@@ -33,6 +37,7 @@ env:
   RELEASE: downscaled-v1
   PANACHE: ${{ inputs.panache }}
   DAYS: ${{ inputs.days }}
+  POLLUTANTS: ${{ inputs.pollutants }}
 
 jobs:
   train:
@@ -64,16 +69,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/fetch-for-maps.sh data/archive all
-      - name: Train
-        run: /tmp/panache/bin/panache-downscaling-maps --archive data/archive train --out models
-      - name: Make sure the release exists, with the models
+      - name: Make sure the release exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" --title "PM2.5 and NO₂ at 1 km over France, day by day" \
+            || gh release create "$RELEASE" \
+              --title "The air quality index's pollutants at 1 km over France, day by day" \
               --notes-file docs/downscaled-release.md
-          gh release upload "$RELEASE" models/*.lgb.txt --clobber
+      - name: Train the models the release lacks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" --json assets --jq '.assets[].name' > models.txt
+          # A published model stays: the maps built with it would no longer match a new one.
+          missing=$(jq -r --rawfile built models.txt '.[] as $pollutant
+            | select(($built | split("\n")) | index("downscaling-\($pollutant).lgb.txt") | not)
+            | $pollutant' <<< "$POLLUTANTS")
+          if [ -z "$missing" ]; then
+            echo "Every model is published." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # shellcheck disable=SC2086 # one argument per pollutant
+          /tmp/panache/bin/panache-downscaling-maps --archive data/archive train \
+            --pollutants $missing --out models
+          gh release upload "$RELEASE" models/*.lgb.txt
+          echo "Trained: $missing" >> "$GITHUB_STEP_SUMMARY"
       - name: Plan
         id: plan
         env:
@@ -88,9 +109,9 @@ jobs:
           esac
           gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
           matrix=$(jq -nc --argjson first "$first" --argjson last "$last" \
-            --rawfile built built.txt --arg pilot "$DAYS" '
+            --rawfile built built.txt --arg pilot "$DAYS" --argjson pollutants "$POLLUTANTS" '
             [range($first; $last + 1) as $year
-             | ("pm2_5", "nitrogen_dioxide") as $pollutant
+             | $pollutants[] as $pollutant
              | select($pilot != ""
                  or (($built | split("\n")) | index("downscaled-\($pollutant)-\($year).days") | not))
              | {pollutant: $pollutant, year: $year}]')

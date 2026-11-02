@@ -1,0 +1,63 @@
+name: Downscaling experiment
+
+# Measures Panache's downscaling to 1 km (Panache's D74) before its maps are built: its model
+# against CAMS alone, out of station and out of area, at the background stations it never saw.
+# Each pollutant runs in its own job; the table goes to the run's summary, the full results to the
+# job's artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      pollutants:
+        description: "The pollutants to measure, a JSON list"
+        default: '["pm10", "ozone", "sulphur_dioxide"]'
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: Experiment, ${{ matrix.pollutant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        pollutant: ${{ fromJSON(inputs.pollutants) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Fetch the archive, every year
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch-for-maps.sh data/archive all
+      - name: Experiment
+        env:
+          POLLUTANT: ${{ matrix.pollutant }}
+        run: |
+          mkdir -p out
+          /tmp/panache/bin/panache-downscaling-experiment --archive data/archive \
+            --pollutants "$POLLUTANT" --out "out/experiment-$POLLUTANT.json" \
+            | tee "out/experiment-$POLLUTANT.md"
+          cat "out/experiment-$POLLUTANT.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: experiment-${{ matrix.pollutant }}
+          path: out/
