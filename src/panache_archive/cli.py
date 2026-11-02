@@ -1,6 +1,6 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
-`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations` and `static`, as the workflows
-run them."""
+`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static` and `fine`, as the
+workflows run them."""
 
 import argparse
 import asyncio
@@ -14,7 +14,18 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from panache_archive import ads, check, era5, merra2, mirror, plan, static, stations, supervise
+from panache_archive import (
+    ads,
+    check,
+    era5,
+    fine,
+    merra2,
+    mirror,
+    plan,
+    static,
+    stations,
+    supervise,
+)
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
 from panache_archive.domain import Domain
 from panache_archive.variables import Reanalysis, Variable
@@ -195,6 +206,13 @@ def _static(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fine(args: argparse.Namespace) -> int:
+    layers = Path(args.layers)
+    tiles = fine.build(layers, layers / "roads.geojsonseq", Path(args.out))
+    print(f"{len(tiles)} tiles in {args.out}")
+    return 0
+
+
 def _months(text: str) -> tuple[int, ...]:
     """`all`, a month such as `2`, or a span such as `2-5`."""
     return ALL_MONTHS if text.strip() == "all" else plan.parse_span(text)
@@ -299,6 +317,13 @@ def _parser() -> argparse.ArgumentParser:
     fixing.add_argument("--layers", required=True, help="the folder of the cut GeoTIFFs")
     fixing.add_argument("--out", default="dist", help="where the asset is written")
     fixing.set_defaults(run=_static)
+
+    finer = commands.add_parser(
+        "fine", help="build the 3 arc-second fixed layers' tiles (scripts/fine-layers.sh's cuts)"
+    )
+    finer.add_argument("--layers", required=True, help="the folder of the cuts and the roads")
+    finer.add_argument("--out", default="dist", help="where the tiles are written")
+    finer.set_defaults(run=_fine)
     return parser
 
 

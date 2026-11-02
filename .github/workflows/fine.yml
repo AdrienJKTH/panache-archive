@@ -1,0 +1,66 @@
+name: Fine layers
+
+# Builds Panache's fixed layers at 3 arc seconds (~90 by 65 m) over France's box, for its
+# downscaling below 1 km (Panache's D74): CORINE Land Cover 2018 from the Copernicus Land
+# Monitoring Service's API (the secret CLMS_SERVICE_KEY), GHSL's population and built-up surface at
+# 100 m, the Copernicus DEM and France's major roads from OpenStreetMap, cut by GDAL, into the
+# release fine-v1 as 1° tiles. Labelling a pull request `pilot-fine` builds them as the run's
+# artifact, without touching the release.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: fine-${{ github.event_name == 'workflow_dispatch' && 'build' || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: fine-v1
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  build:
+    name: Tiles
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'pilot-fine'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: |
+          uv sync --locked
+          sudo apt-get update -q && sudo apt-get install -y -q gdal-bin osmium-tool
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+      - name: Ask the CLMS for CORINE over the box
+        env:
+          CLMS_SERVICE_KEY: ${{ secrets.CLMS_SERVICE_KEY }}
+        run: scripts/clms-corine.sh /mnt/work/corine.zip
+      - name: Cut the sources onto the grid
+        run: scripts/fine-layers.sh /mnt/work/layers /mnt/work/corine.zip
+      - name: Build the tiles
+        run: uv run panache-archive fine --layers /mnt/work/layers --out dist
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" > /dev/null 2>&1 \
+            || gh release create "$RELEASE" --title "Fixed layers at 3 arc seconds over France" \
+              --notes-file docs/fine-release.md
+          gh release upload "$RELEASE" dist/*.npz --clobber
+      - name: Keep as the pilot's artifact
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fine
+          path: dist/
