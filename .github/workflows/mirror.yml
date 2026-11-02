@@ -1,15 +1,15 @@
 name: Mirror
 
-# Keeps the whole domain's releases mirrored on Hugging Face (Panache's D66, D71): the public
-# dataset adrien4916/air_qual_indicators, one folder per release (cams-europe-v1,
-# era5-europe-v1, merra2-europe-v1, maps-europe-v1), which Panache reads when GitHub fails. After
-# each CAMS, ERA5, MERRA-2 or Domain maps run and every
+# Keeps every release mirrored on Hugging Face (Panache's D66, D71, D78): the public dataset
+# adrien4916/air_qual_indicators, one folder per release, which Panache reads when GitHub
+# fails. After each run that publishes assets and every
 # three hours, it uploads what the mirror lacks or holds otherwise, deletes what a release
 # dropped, and keeps the dataset card. A run with nothing to do costs two listings a release.
 
 on:
   workflow_run:
-    workflows: [CAMS, ERA5, MERRA-2, Domain maps]
+    workflows:
+      [CAMS, ERA5, MERRA-2, Domain maps, Downscaling inputs, Downscaled maps, Fine layers]
     types: [completed]
   schedule:
     - cron: "17 */3 * * *"
@@ -39,7 +39,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          for release in cams-europe-v1 era5-europe-v1 merra2-europe-v1 maps-europe-v1; do
+          # Every release of the repository: everything is on both hosts (Adrien, 2026-11-02).
+          for release in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+              --json tagName --jq '.[].tagName'); do
             gh api "repos/$GITHUB_REPOSITORY/releases/tags/$release" > release.json \
               || echo '{"assets": []}' > release.json
             echo "**$release**: $(uv run panache-archive mirror --release release.json \
