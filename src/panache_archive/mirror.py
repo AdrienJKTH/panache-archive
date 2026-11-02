@@ -74,18 +74,14 @@ class Hub(Protocol):
 
 Download = Callable[[Asset, Path], None]
 """Fetches a release asset into a file."""
-MIRRORED = (".cells", ".days")
-"""The data assets: the archives' cells (Panache's D66) and the map colourings' days (D78)."""
 
 
 def release_assets(listing: Iterable[Mapping[str, Any]]) -> list[Asset]:
-    """The release's data assets (`MIRRORED`), from GitHub's JSON (`name`, `size`, `digest`, and
-    `browser_download_url`)."""
+    """Every asset of the release, from GitHub's JSON (`name`, `size`, `digest`, and
+    `browser_download_url`): its data, models and notes alike."""
     assets = []
     for entry in listing:
         name = str(entry["name"])
-        if not name.endswith(MIRRORED):
-            continue
         digest = entry.get("digest") or ""
         sha256 = digest.removeprefix("sha256:") if digest.startswith("sha256:") else None
         assets.append(

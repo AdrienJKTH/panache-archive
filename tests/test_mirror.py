@@ -49,18 +49,21 @@ def _download(asset: Asset, target: Path) -> None:
     target.write_bytes(CONTENTS[asset.name])
 
 
-def test_the_release_lists_its_cells_with_their_digest() -> None:
+def test_the_release_lists_every_asset_with_its_digest() -> None:
     listing = [
         {"name": "a.cells", "size": 3, "digest": "sha256:abc", "browser_download_url": "u"},
         {"name": "b.cells", "size": 4, "digest": None},
         {"name": "map-causes-2021.days", "size": 5, "digest": "sha256:def"},
-        {"name": "notes.md", "size": 1},
+        {"name": "cams-pm10-2021-validated.parquet", "size": 6},
+        {"name": "downscaling-pm2_5.lgb.txt", "size": 1},
     ]
 
     assert mirror.release_assets(listing) == [
         Asset("a.cells", 3, "abc", "u"),
         Asset("b.cells", 4),
         Asset("map-causes-2021.days", 5, "def"),
+        Asset("cams-pm10-2021-validated.parquet", 6),
+        Asset("downscaling-pm2_5.lgb.txt", 1),
     ]
 
 
