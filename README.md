@@ -164,6 +164,10 @@ gh workflow run downscaled.yml -f panache=main -f years=2021 -f days=3
 gh workflow run downscaled.yml -f panache=main -f years=all
 ```
 
+## Town maps
+
+Daily maps of a town at 3 arc seconds (~90 by 65 m), 2013 to the last complete year (Panache's D74), in the release `downscaled-towns-v1`: NO₂'s daily mean over Paris first, one `downscaled-<pollutant>-<town>-<year>.days` file per pollutant, town and year, in the format of the downscaled maps, and the model (`downscaling-fine-<pollutant>.lgb.txt`). All of France on this grid could not be stored, so towns are built one at a time. The [`Town maps`](.github/workflows/towns.yml) workflow trains the fine model the release lacks on the EEA's background and traffic stations, then builds the years the release lacks, one job each; with `days`, a pilot builds each year's first days as the run's artifacts. `Mirror` copies them to Hugging Face.
+
 ## Fine layers
 
 Fixed layers at 3 arc seconds (~90 by 65 m) over France's box, for Panache's downscaling below 1 km (Panache's D74), in the release `fine-v1`: one `fine-<south><west>.npz` per 1° tile holding land, rows from the south, ten by ten cells in each 30″ cell of the 1 km layers.

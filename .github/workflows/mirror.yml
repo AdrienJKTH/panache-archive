@@ -9,7 +9,16 @@ name: Mirror
 on:
   workflow_run:
     workflows:
-      [CAMS, ERA5, MERRA-2, Domain maps, Downscaling inputs, Downscaled maps, Fine layers]
+      [
+        CAMS,
+        ERA5,
+        MERRA-2,
+        Domain maps,
+        Downscaling inputs,
+        Downscaled maps,
+        Fine layers,
+        Town maps,
+      ]
     types: [completed]
   schedule:
     - cron: "17 */3 * * *"
