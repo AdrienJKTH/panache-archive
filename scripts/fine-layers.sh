@@ -62,7 +62,9 @@ gdalwarp -q "${grid[@]}" -r average -ot Float32 "$work/elevation.vrt" "$work/ele
 # CORINE's class index (1 to 44) at each cell, from its 100 m raster (EPSG:3035).
 mkdir -p "$work/corine"
 unzip -q -o "$corine_zip" -d "$work/corine"
-clc=$(find "$work/corine" -name '*.tif' | head -1)
+# The service's zip may hold the dataset's own zip, and the overseas territories in small rasters.
+find "$work/corine" -name '*.zip' -exec unzip -q -o -d "$work/corine" {} \;
+clc=$(find "$work/corine" -name '*.tif' -printf '%s %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
 gdalwarp -q -t_srs EPSG:4326 "${grid[@]}" -r near -ot Byte "$clc" "$work/corine.tif"
 rm -rf "$work/corine"
 

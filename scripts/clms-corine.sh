@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Downloads CORINE Land Cover 2018 (raster 100 m) over Europe from the Copernicus Land
-# Monitoring Service's API, with the service key in $CLMS_SERVICE_KEY: a request cut to the box,
-# prepared by the service in the background, polled until it is ready (its link lasts 72 hours).
+# Monitoring Service's API, with the service key in $CLMS_SERVICE_KEY: its pan-European file (a
+# box this large is refused), prepared by the service in the background, polled until it is ready
+# (its link lasts 72 hours).
 # https://eea.github.io/clms-api-docs/download.html
 #
 # Usage: scripts/clms-corine.sh OUT.zip
@@ -11,15 +12,11 @@ out=$1
 api=https://land.copernicus.eu/api
 here=$(dirname "$0")
 dataset=0407d497d3c44bcd93ce8fd5bf78596a       # CORINE Land Cover 2018
-raster=7bcdf9d1-6ba0-4d4e-afa8-01451c7316cb    # its raster 100 m
-west=-25.0 north=72.0 east=45.0 south=30.0     # the domain (src/panache_archive/fine.py)
+raster=3d9e2413-46ca-4f6e-abf8-b6eb429a4e48    # its raster 100 m, ~125 MB
 
 token=$("$here/clms-token.sh")
 echo "::add-mask::$token"
-body=$(jq -nc --arg d "$dataset" --arg r "$raster" \
-  --argjson box "[$west, $north, $east, $south]" \
-  '{Datasets: [{DatasetID: $d, DatasetDownloadInformationID: $r, OutputFormat: "Geotiff",
-    OutputGCS: "EPSG:3035", BoundingBox: $box}]}')
+body=$(jq -nc --arg d "$dataset" --arg f "$raster" '{Datasets: [{DatasetID: $d, FileID: $f}]}')
 task=$(curl -fsS -X POST "$api/@datarequest_post" -H "Authorization: Bearer $token" \
   -H 'Accept: application/json' -H 'Content-Type: application/json' -d "$body" \
   | jq -re '.TaskIds[0].TaskID')
