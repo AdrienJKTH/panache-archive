@@ -1,14 +1,20 @@
 name: Fine layers
 
-# Builds Panache's fixed layers at 3 arc seconds (~90 by 65 m) over France's box, for its
-# downscaling below 1 km (Panache's D74): CORINE Land Cover 2018 from the Copernicus Land
-# Monitoring Service's API (the secret CLMS_SERVICE_KEY), GHSL's population and built-up surface at
-# 100 m, the Copernicus DEM and France's major roads from OpenStreetMap, cut by GDAL, into the
-# release fine-v1 as 1° tiles. Labelling a pull request `pilot-fine` builds them as the run's
-# artifact, without touching the release.
+# Builds Panache's fixed layers at 3 arc seconds (~90 by 65 m) over Europe, for its downscaling
+# below 1 km (Panache's D74): CORINE Land Cover 2018 from the Copernicus Land Monitoring Service's
+# API (the secret CLMS_SERVICE_KEY), GHSL's population and built-up surface at 100 m, the
+# Copernicus DEM and OpenStreetMap's major roads, cut by GDAL into 1° tiles. A first job fetches
+# CORINE and Europe's roads once; then one job a block of 10° by 10° cuts its tiles. A release holds
+# at most 1,000 assets, so the tiles go to two: fine-europe-west-v1 and fine-europe-east-v1, split
+# at 15° E. Labelling a pull request `pilot-fine` builds one block, with the Alps' roads alone, as
+# the run's artifact, without touching the releases.
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "One block to build, such as N40E005; empty for all"
+        default: ""
   pull_request:
     types: [labeled]
 
@@ -20,17 +26,73 @@ permissions:
   contents: read
 
 env:
-  RELEASE: fine-v1
   PUBLISH: ${{ github.event_name == 'workflow_dispatch' }}
+  ONLY: >-
+    ${{ github.event_name == 'workflow_dispatch' && inputs.only
+    || (github.event_name == 'pull_request' && 'N40E005' || '') }}
+  ROADS: ${{ github.event_name == 'workflow_dispatch' && 'europe' || 'alps' }}
 
 jobs:
-  build:
-    name: Tiles
+  sources:
+    name: CORINE and the roads
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'pilot-fine'
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     permissions:
       contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: |
+          uv sync --locked
+          sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+          sudo mkdir -p /mnt/work/sources && sudo chown -R "$USER" /mnt/work
+      - name: Plan the blocks
+        id: plan
+        run: |
+          matrix=$(uv run panache-archive fine-plan ${ONLY:+--only "$ONLY"})
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) blocks"' >> "$GITHUB_STEP_SUMMARY"
+      - name: Make sure the releases exist
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for release in fine-europe-west-v1 fine-europe-east-v1; do
+            gh release view "$release" > /dev/null 2>&1 \
+              || gh release create "$release" \
+                --title "Fixed layers at 3 arc seconds over Europe, ${release:12:4} of 15° E" \
+                --notes-file docs/fine-release.md
+          done
+      - name: Ask the CLMS for CORINE over Europe
+        env:
+          CLMS_SERVICE_KEY: ${{ secrets.CLMS_SERVICE_KEY }}
+        run: scripts/clms-corine.sh /mnt/work/sources/corine.zip
+      - name: Keep the major roads
+        run: scripts/fine-roads.sh "$ROADS" /mnt/work/sources/roads.osm.pbf
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fine-sources
+          path: /mnt/work/sources/
+          compression-level: 0
+          retention-days: 3
+
+  block:
+    name: ${{ matrix.name }}
+    needs: sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.sources.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -41,26 +103,35 @@ jobs:
           uv sync --locked
           sudo apt-get update -q && sudo apt-get install -y -q gdal-bin osmium-tool
           sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
-      - name: Ask the CLMS for CORINE over the box
-        env:
-          CLMS_SERVICE_KEY: ${{ secrets.CLMS_SERVICE_KEY }}
-        run: scripts/clms-corine.sh /mnt/work/corine.zip
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fine-sources
+          path: /mnt/work/sources
       - name: Cut the sources onto the grid
-        run: scripts/fine-layers.sh /mnt/work/layers /mnt/work/corine.zip
+        run: >
+          scripts/fine-layers.sh /mnt/work/layers /mnt/work/sources/corine.zip
+          /mnt/work/sources/roads.osm.pbf
+          ${{ matrix.south }} ${{ matrix.north }} ${{ matrix.west }} ${{ matrix.east }}
+          "${{ matrix.ghsl }}"
       - name: Build the tiles
-        run: uv run panache-archive fine --layers /mnt/work/layers --out dist
+        run: |
+          mkdir -p dist
+          [ -e /mnt/work/layers/empty ] && exit 0
+          uv run panache-archive fine --layers /mnt/work/layers --out dist --box \
+            ${{ matrix.south }} ${{ matrix.north }} ${{ matrix.west }} ${{ matrix.east }} \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Publish
         if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" --title "Fixed layers at 3 arc seconds over France" \
-              --notes-file docs/fine-release.md
-          gh release upload "$RELEASE" dist/*.npz --clobber
+          shopt -s nullglob
+          tiles=(dist/*.npz)
+          ((${#tiles[@]} == 0)) && exit 0
+          gh release upload "${{ matrix.release }}" "${tiles[@]}" --clobber
       - name: Keep as the pilot's artifact
         if: env.PUBLISH != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fine
+          name: fine-${{ matrix.name }}
           path: dist/

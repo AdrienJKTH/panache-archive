@@ -1,5 +1,6 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
-`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static` and `fine`, as the
+`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static`, `fine` and
+`fine-plan`, as the
 workflows run them."""
 
 import argparse
@@ -28,6 +29,8 @@ from panache_archive import (
 )
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
 from panache_archive.domain import Domain
+from panache_archive.grid import Box
+from panache_archive.static import Grid
 from panache_archive.variables import Reanalysis, Variable
 
 
@@ -208,8 +211,14 @@ def _static(args: argparse.Namespace) -> int:
 
 def _fine(args: argparse.Namespace) -> int:
     layers = Path(args.layers)
-    tiles = fine.build(layers, layers / "roads.geojsonseq", Path(args.out))
+    grid = Grid(Box(*args.box), fine.CELLS_PER_DEGREE)
+    tiles = fine.build(layers, layers / "roads.geojsonseq", Path(args.out), grid)
     print(f"{len(tiles)} tiles in {args.out}")
+    return 0
+
+
+def _fine_plan(args: argparse.Namespace) -> int:
+    print(json.dumps(fine.plan(args.only)))
     return 0
 
 
@@ -323,7 +332,20 @@ def _parser() -> argparse.ArgumentParser:
     )
     finer.add_argument("--layers", required=True, help="the folder of the cuts and the roads")
     finer.add_argument("--out", default="dist", help="where the tiles are written")
+    finer.add_argument(
+        "--box",
+        type=float,
+        nargs=4,
+        required=True,
+        metavar=("SOUTH", "NORTH", "WEST", "EAST"),
+        help="the block the cuts cover",
+    )
     finer.set_defaults(run=_fine)
+    fine_plan = commands.add_parser(
+        "fine-plan", help="print the fine layers' blocks as the workflow's matrix"
+    )
+    fine_plan.add_argument("--only", help="one block, such as N40E005")
+    fine_plan.set_defaults(run=_fine_plan)
     return parser
 
 
