@@ -1,0 +1,166 @@
+name: Town maps
+
+# Builds Panache's maps of a town at ~100 m (Panache's D74) into the release downscaled-towns-v1:
+# one `.days` file per pollutant, town and year. Panache's own backend builds them
+# (`panache-downscaling-towns`, checked out at the commit asked with the deploy key
+# PANACHE_DEPLOY_KEY, since Panache's repository is private): it trains the pollutant's fine model
+# once on the EEA's background and traffic stations (releases downscaling-v1 and fine-v1), then
+# predicts every cell of the town's box for every day from the archive's CAMS (cams-v1) and ERA5
+# (era5-v1). A run builds the years the release lacks; with `days`, a pilot builds each year's
+# first days as the run's artifacts, without touching the release's maps.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache whose backend builds the maps"
+        default: main
+      town:
+        description: "A town of Panache's `town_maps.TOWNS`"
+        default: paris
+      pollutant:
+        description: "The pollutant to map"
+        default: nitrogen_dioxide
+      years:
+        description: "`all` (2013 to the last complete year), a year, or a span such as 2013-2025"
+        default: all
+      days:
+        description: "Only each year's first days (a pilot); empty for whole years"
+        default: ""
+
+concurrency:
+  group: towns
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: downscaled-towns-v1
+  DAYS: ${{ inputs.days }}
+  TOWN: ${{ inputs.town }}
+  POLLUTANT: ${{ inputs.pollutant }}
+
+jobs:
+  train:
+    name: Train the fine model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    outputs:
+      years: ${{ steps.plan.outputs.years }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" > /dev/null 2>&1 \
+            || gh release create "$RELEASE" --title "Towns at ~100 m, day by day" \
+              --notes-file docs/towns-release.md
+          gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+      - name: Fetch the archive and the fine layers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grep -qx "downscaling-fine-$POLLUTANT.lgb.txt" built.txt && exit 0
+          scripts/fetch-for-maps.sh data/archive all
+          gh release download fine-v1 --pattern "fine-*.npz" --dir data/fine
+      - name: Train the model the release lacks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A published model stays: the maps built with it would no longer match a new one.
+          grep -qx "downscaling-fine-$POLLUTANT.lgb.txt" built.txt && exit 0
+          /tmp/panache/bin/panache-downscaling-towns --archive data/archive --fine data/fine \
+            train --pollutant "$POLLUTANT" --out models
+          gh release upload "$RELEASE" models/*.lgb.txt
+      - name: Plan
+        id: plan
+        env:
+          YEARS: ${{ inputs.years }}
+        run: |
+          last=$(( $(date -u +%Y) - 1 ))
+          case "$YEARS" in
+            all) first=2013 ;;
+            *-*) first=${YEARS%-*} last=${YEARS#*-} ;;
+            *) first=$YEARS last=$YEARS ;;
+          esac
+          years=$(jq -nc --argjson first "$first" --argjson last "$last" \
+            --rawfile built built.txt --arg pilot "$DAYS" \
+            --arg pollutant "$POLLUTANT" --arg town "$TOWN" '
+            [range($first; $last + 1) as $year
+             | select($pilot != ""
+                 or (($built | split("\n"))
+                     | index("downscaled-\($pollutant)-\($town)-\($year).days") | not))
+             | $year]')
+          echo "years=$years" >> "$GITHUB_OUTPUT"
+          echo "$years" | jq -r '"\(length) years to build"' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ inputs.town }} ${{ matrix.year }}
+    needs: train
+    if: needs.train.outputs.years != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        year: ${{ fromJSON(needs.train.outputs.years) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # See the job above.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Fetch the archive's year, the fine layers and the model
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/fetch-for-maps.sh data/archive "${{ matrix.year }}"
+          gh release download fine-v1 --pattern "fine-*.npz" --dir data/fine
+          gh release download "$RELEASE" --pattern "*.lgb.txt" --dir models
+      - name: Build
+        run: >
+          /tmp/panache/bin/panache-downscaling-towns --archive data/archive --fine data/fine
+          year --pollutant "$POLLUTANT" --town "$TOWN" --year "${{ matrix.year }}" --models models
+          ${DAYS:+--days "$DAYS"} --out dist | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        if: env.DAYS == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.days --clobber
+      - name: Keep as the pilot's artifact
+        if: env.DAYS != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: town-${{ matrix.year }}
+          path: dist/
