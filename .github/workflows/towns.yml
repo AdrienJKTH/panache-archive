@@ -6,8 +6,9 @@ name: Town maps
 # PANACHE_DEPLOY_KEY, since Panache's repository is private): it trains the pollutant's fine model
 # once on the EEA's background and traffic stations (releases downscaling-v1 and fine-v1), then
 # predicts every cell of the town's box for every day from the archive's CAMS (cams-v1) and ERA5
-# (era5-v1). A run builds the years the release lacks; with `days`, a pilot builds each year's
-# first days as the run's artifacts, without touching the release's maps.
+# (era5-v1). A run builds the years the release lacks, then sums each year it holds up into a
+# monthly file (`typical-…`); with `days`, a pilot builds each year's first days as the run's
+# artifacts, without touching the release's maps.
 
 on:
   workflow_dispatch:
@@ -164,3 +165,44 @@ jobs:
         with:
           name: town-${{ matrix.year }}
           path: dist/
+
+  months:
+    name: Monthly maps
+    needs: [train, build]
+    if: ${{ always() && needs.train.result == 'success' && inputs.days == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # See the first job.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Sum up the years without their months
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+          for year in $(sed -n "s/^downscaled-$POLLUTANT-$TOWN-\([0-9]*\)\.days$/\1/p" built.txt); do
+            grep -qx "typical-$POLLUTANT-$TOWN-$year.days" built.txt && continue
+            gh release download "$RELEASE" --pattern "downscaled-$POLLUTANT-$TOWN-$year.days" \
+              --dir days
+            /tmp/panache/bin/panache-downscaling-towns months --pollutant "$POLLUTANT" \
+              --town "$TOWN" --year "$year" \
+              --days-file "days/downscaled-$POLLUTANT-$TOWN-$year.days" --out dist \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            gh release upload "$RELEASE" "dist/typical-$POLLUTANT-$TOWN-$year.days"
+            rm "days/downscaled-$POLLUTANT-$TOWN-$year.days"
+          done
