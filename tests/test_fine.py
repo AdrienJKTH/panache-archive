@@ -143,14 +143,47 @@ def test_build_turns_gdals_cuts_into_tiles(tmp_path: Path) -> None:
 def test_cli_builds_from_the_layers_folder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    asked: list[tuple[Path, Path, Path]] = []
+    asked: list[tuple[Path, Path, Path, Grid]] = []
 
-    def build(layers: Path, roads: Path, out: Path) -> list[Path]:
-        asked.append((layers, roads, out))
+    def build(layers: Path, roads: Path, out: Path, grid: Grid) -> list[Path]:
+        asked.append((layers, roads, out, grid))
         return [out / "fine-N45E004.npz"]
 
     monkeypatch.setattr("panache_archive.fine.build", build)
 
-    assert cli.main(["fine", "--layers", str(tmp_path), "--out", "dist"]) == 0
-    assert asked == [(tmp_path, tmp_path / "roads.geojsonseq", Path("dist"))]
+    box = ["--box", "40", "50", "-5", "5"]
+    assert cli.main(["fine", "--layers", str(tmp_path), "--out", "dist", *box]) == 0
+    assert asked == [
+        (
+            tmp_path,
+            tmp_path / "roads.geojsonseq",
+            Path("dist"),
+            Grid(Box(40, 50, -5, 5), fine.CELLS_PER_DEGREE),
+        )
+    ]
     assert "1 tiles in dist" in capsys.readouterr().out
+
+
+def test_the_domain_is_cut_in_blocks_on_whole_degrees() -> None:
+    found = fine.blocks()
+
+    assert len(found) == 35
+    assert found[0] == Box(30, 40, -25, -15)
+    assert found[-1] == Box(70, 72, 35, 45)
+    assert sum((b.north - b.south) * (b.east - b.west) for b in found) == 42 * 70
+
+
+def test_a_block_knows_its_ghsl_tiles_and_its_release() -> None:
+    plan = {block["name"]: block for block in fine.plan()}
+
+    assert "R5_C19" in plan["N40W005"]["ghsl"].split()
+    assert plan["N40W005"]["release"] == "fine-europe-west-v1"
+    assert plan["N40E015"]["release"] == "fine-europe-east-v1"
+    assert (plan["N70E035"]["south"], plan["N70E035"]["north"]) == (70, 72)
+    assert fine.ghsl_tiles(Box(48.8, 48.9, 2.2, 2.4)) == ["R4_C19"]
+
+
+def test_the_plan_can_keep_one_block(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["fine-plan", "--only", "N40E005"]) == 0
+
+    assert [block["name"] for block in json.loads(capsys.readouterr().out)] == ["N40E005"]

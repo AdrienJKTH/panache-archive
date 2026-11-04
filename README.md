@@ -170,13 +170,13 @@ Daily maps of a town at 3 arc seconds (~90 by 65 m), 2013 to the last complete y
 
 ## Fine layers
 
-Fixed layers at 3 arc seconds (~90 by 65 m) over France's box, for Panache's downscaling below 1 km (Panache's D74), in the release `fine-v1`: one `fine-<south><west>.npz` per 1° tile holding land, rows from the south, ten by ten cells in each 30″ cell of the 1 km layers.
+Fixed layers at 3 arc seconds (~90 by 65 m) over Europe, as far as CORINE covers it, for Panache's downscaling below 1 km (Panache's D74), in the releases `fine-europe-west-v1` and `fine-europe-east-v1`, split at 15° E since a release holds at most 1,000 assets (`fine-v1` holds France's box, on which the first fine model was trained): one `fine-<south><west>.npz` per 1° tile holding land, rows from the south, ten by ten cells in each 30″ cell of the 1 km layers.
 
 - `corine` (uint8): CORINE Land Cover 2018's class at each cell (the raster's index 1 to 44; `about.corine_codes` gives the CLC codes), requested cut to the box from the Copernicus Land Monitoring Service's API with the secret `CLMS_SERVICE_KEY` (`scripts/clms-corine.sh`). Its objects are at least 25 ha: it tells nothing below ~500 m.
 - `population` (uint16, inhabitants/km²) and `built_up` (uint8, 250ths of the cell): GHS-POP and GHS-BUILT-S 2020 at 100 m, averaged onto the grid.
 - `elevation` (int16, m): the Copernicus DEM GLO-90.
-- `road_major`, `road_primary`, `road_secondary` (uint16, m of road in the cell): OpenStreetMap's motorways and trunks, primary and secondary roads with their links, from Geofabrik's extract of France (filtered by osmium, cut into 10 m steps); roads abroad are missing.
-- The [`Fine layers`](.github/workflows/fine.yml) workflow builds them; labelling a pull request `pilot-fine` builds them as the run's artifact.
+- `road_major`, `road_primary`, `road_secondary` (uint16, m of road in the cell): OpenStreetMap's motorways and trunks, primary and secondary roads with their links, from Geofabrik's extract of Europe (filtered by osmium, cut into 10 m steps); roads abroad are missing.
+- The [`Fine layers`](.github/workflows/fine.yml) workflow fetches CORINE and the roads once, then cuts one block of 10° by 10° a job; labelling a pull request `pilot-fine` builds one block, with the Alps' roads alone, as the run's artifact.
 
 ## Development
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Downloads CORINE Land Cover 2018 (raster 100 m) over France's box from the Copernicus Land
+# Downloads CORINE Land Cover 2018 (raster 100 m) over Europe from the Copernicus Land
 # Monitoring Service's API, with the service key in $CLMS_SERVICE_KEY: a request cut to the box,
 # prepared by the service in the background, polled until it is ready (its link lasts 72 hours).
 # https://eea.github.io/clms-api-docs/download.html
@@ -12,7 +12,7 @@ api=https://land.copernicus.eu/api
 here=$(dirname "$0")
 dataset=0407d497d3c44bcd93ce8fd5bf78596a       # CORINE Land Cover 2018
 raster=7bcdf9d1-6ba0-4d4e-afa8-01451c7316cb    # its raster 100 m
-west=-5.5 north=51.5 east=10.0 south=41.0      # France's box (src/panache_archive/grid.py)
+west=-25.0 north=72.0 east=45.0 south=30.0     # the domain (src/panache_archive/fine.py)
 
 token=$("$here/clms-token.sh")
 echo "::add-mask::$token"

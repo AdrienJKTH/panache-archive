@@ -1,10 +1,12 @@
-"""Fixed layers over France at 3 arc seconds (~90 by 65 m): where a point lies within its 1 km
-cell, for Panache's downscaling below 1 km (Panache's D74, Adrien's request of 2026-11-01).
+"""Fixed layers over Europe at 3 arc seconds (~90 by 65 m): where a point lies within its 1 km
+cell, for Panache's downscaling below 1 km (Panache's D74, Adrien's requests of 2026-11-01 and
+2026-11-04).
 
-The grid is 1/1200° inside France's box (41 to 51.5° N, 5.5° W to 10° E): 12,600 by 18,600
-cells, ten by ten in each 30″ cell of the 1 km layers and 120 by 120 in each 0.1° CAMS cell.
-It is cut into 1° tiles, one `.npz` each (`fine-N45E004.npz` holds 45-46° N, 4-5° E), rows from
-the south; a tile without land is left out.
+The grid is 1/1200° over the CAMS Europe domain, 30 to 72° N and 25° W to 45° E: ten by ten cells
+in each 30″ cell of the 1 km layers and 120 by 120 in each 0.1° CAMS cell. It is built one block
+of 10° by 10° at a time (`blocks`), since the whole grid is 4.2 billion cells, and cut into 1°
+tiles, one `.npz` each (`fine-N45E004.npz` holds 45-46° N, 4-5° E), rows from the south; a tile
+without CORINE's land is left out, so Europe here is what CORINE covers.
 
 - **CORINE Land Cover 2018** (100 m, the Copernicus Land Monitoring Service): each cell's class,
   as the raster's index 1 to 44 (`CORINE_CODES` gives the CLC code); 0 outside CORINE. Its
@@ -13,7 +15,7 @@ the south; a tile without land is left out.
 - **Built-up surface** (share of the cell, in 250ths): JRC's GHS-BUILT-S 2020 at 100 m.
 - **Elevation** (m): the Copernicus DEM GLO-90.
 - **Major roads** (m in the cell): OpenStreetMap's motorways and trunks, primary and secondary
-  roads, links included; France's extract only, so roads abroad are missing.
+  roads, links included, from Geofabrik's extract of Europe.
 
 GDAL cuts the rasters onto the grid (`scripts/fine-layers.sh`); this module sums the roads' lengths
 cell by cell and writes the tiles.
@@ -31,14 +33,25 @@ from typing import Any, Final
 import numpy as np
 from numpy.typing import NDArray
 
-from panache_archive.grid import FRANCE
+from panache_archive.grid import Box
 from panache_archive.static import EARTH_RADIUS_KM, Grid, read_layer
 
 FloatArray = NDArray[np.float64]
 
 CELLS_PER_DEGREE: Final = 1200
-FINE: Final = Grid(FRANCE, CELLS_PER_DEGREE)
+DOMAIN: Final = Box(south=30.0, north=72.0, west=-25.0, east=45.0)
+"""The CAMS Europe domain, on whole degrees."""
+BLOCK_DEGREES: Final = 10
+EAST_FROM: Final = 15
+"""Blocks from this longitude go to the eastern release: a release holds at most 1,000 assets."""
+RELEASES: Final = ("fine-europe-west-v1", "fine-europe-east-v1")
 TILE_DEGREES: Final = 1
+GHSL_RADIUS_M: Final = 6378137.0
+"""GHSL's Mollweide (ESRI:54009) is on WGS 84's sphere."""
+GHSL_WEST_M: Final = -18041000.0
+GHSL_NORTH_M: Final = 9000000.0
+GHSL_TILE_M: Final = 1000000.0
+"""GHSL's 100 m tiles: 1,000 km squares from this corner, `R1_C1` the first."""
 STEP_M: Final = 10.0
 """Roads are cut into steps of at most this length, each counted in the cell of its middle."""
 ROAD_CLASSES: Final[Mapping[str, str]] = {
@@ -70,7 +83,7 @@ SOURCES: Final = {
     "built_up": "JRC GHS-BUILT-S R2023A, epoch 2020, 100 m (CC-BY 4.0)",
     "elevation": "Copernicus DEM GLO-90 (© DLR e.V. 2010-2014 and © Airbus Defence and Space "
     "GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA)",
-    "roads": "© OpenStreetMap contributors (ODbL), Geofabrik's extract of France",
+    "roads": "© OpenStreetMap contributors (ODbL), Geofabrik's extract of Europe",
 }
 
 logger = logging.getLogger(__name__)
@@ -103,11 +116,11 @@ def read_roads(path: Path) -> Iterator[Road]:
                 yield Road(layer, [_points(part) for part in geometry["coordinates"]])
 
 
-def road_lengths(roads: Iterable[Road], grid: Grid = FINE) -> dict[str, NDArray[np.uint16]]:
+def road_lengths(roads: Iterable[Road], grid: Grid) -> dict[str, NDArray[np.uint16]]:
     """Each road layer's metres in each cell, `[lat, lon]` from the south, capped at 65,535.
 
     The steps are gathered first and summed once per layer, so that only one grid of float64
-    is ever in memory (~1.9 GB for France's box).
+    is ever in memory (~1.2 GB for a block).
     """
     rows, cols = grid.shape
     cells: dict[str, list[NDArray[np.intp]]] = {layer: [] for layer in ROAD_LAYERS}
@@ -133,10 +146,9 @@ def tile_name(south: int, west: int) -> str:
     return f"fine-{lat}{lon}.npz"
 
 
-def write_tiles(layers: Mapping[str, NDArray[Any]], out: Path, grid: Grid = FINE) -> list[Path]:
-    """One `.npz` per whole degree of latitude and longitude holding land, cut at the box's edges
-    (its western tile is half a degree wide); `layers` are `[lat, lon]` arrays from the south,
-    `corine` among them."""
+def write_tiles(layers: Mapping[str, NDArray[Any]], out: Path, grid: Grid) -> list[Path]:
+    """One `.npz` per whole degree of latitude and longitude holding land, cut at the box's edges;
+    `layers` are `[lat, lon]` arrays from the south, `corine` among them."""
     out.mkdir(parents=True, exist_ok=True)
     about = {
         "grid": {"cells_per_degree": grid.cells_per_degree, "rows": "from the south"},
@@ -178,7 +190,53 @@ def _cells(first: int, low: float, high: float, grid: Grid) -> slice:
     return slice(start, stop)
 
 
-def build(layers_dir: Path, roads: Path, out: Path, grid: Grid = FINE) -> list[Path]:
+def blocks(domain: Box = DOMAIN, degrees: int = BLOCK_DEGREES) -> list[Box]:
+    """The domain in blocks of `degrees`, from the south-west, cut at its edges."""
+    found: list[Box] = []
+    for south in range(int(domain.south), int(domain.north), degrees):
+        for west in range(int(domain.west), int(domain.east), degrees):
+            north = min(south + degrees, domain.north)
+            found.append(Box(south, north, west, min(west + degrees, domain.east)))
+    return found
+
+
+def block_name(block: Box) -> str:
+    return tile_name(int(block.south), int(block.west)).removeprefix("fine-").removesuffix(".npz")
+
+
+def ghsl_tiles(box: Box) -> list[str]:
+    """GHSL's 100 m tiles that a box touches, such as `R4_C19`: its points every 0.25° in
+    Mollweide, whose meridians curve, so that its corners alone would not do."""
+    lats = np.arange(box.south, box.north + 0.25, 0.25).clip(max=box.north)
+    lons = np.arange(box.west, box.east + 0.25, 0.25).clip(max=box.east)
+    lat, lon = np.meshgrid(np.radians(lats), np.radians(lons))
+    theta = _mollweide_theta(lat)
+    x = 2 * np.sqrt(2) / np.pi * GHSL_RADIUS_M * lon * np.cos(theta)
+    y = np.sqrt(2) * GHSL_RADIUS_M * np.sin(theta)
+    rows = np.floor((GHSL_NORTH_M - y) / GHSL_TILE_M).astype(np.int64) + 1
+    cols = np.floor((x - GHSL_WEST_M) / GHSL_TILE_M).astype(np.int64) + 1
+    found = sorted({(int(r), int(c)) for r, c in zip(rows.ravel(), cols.ravel(), strict=True)})
+    return [f"R{row}_C{col}" for row, col in found]
+
+
+def plan(only: str | None = None) -> list[dict[str, Any]]:
+    """The blocks to build, for the workflow's matrix: each one's edges, GHSL tiles and release."""
+    found = [
+        {
+            "name": block_name(block),
+            "south": int(block.south),
+            "north": int(block.north),
+            "west": int(block.west),
+            "east": int(block.east),
+            "ghsl": " ".join(ghsl_tiles(block)),
+            "release": RELEASES[block.west >= EAST_FROM],
+        }
+        for block in blocks()
+    ]
+    return [block for block in found if only in (None, block["name"])]
+
+
+def build(layers_dir: Path, roads: Path, out: Path, grid: Grid) -> list[Path]:
     """The tiles from GDAL's cuts in `layers_dir` (`scripts/fine-layers.sh`: GHSL's counts per
     100 m pixel averaged onto the grid, the DEM averaged, CORINE's index at each cell) and the
     roads' GeoJSON sequence."""
@@ -201,6 +259,16 @@ def build(layers_dir: Path, roads: Path, out: Path, grid: Grid = FINE) -> list[P
     for name, values in layers.items():
         logger.info("%s: max %s", name, values.max())
     return write_tiles(layers, out, grid)
+
+
+def _mollweide_theta(lat: FloatArray) -> FloatArray:
+    """Mollweide's auxiliary angle: 2θ + sin 2θ = π sin φ, by Newton's method."""
+    theta = lat.copy()
+    for _ in range(8):
+        theta = theta - (2 * theta + np.sin(2 * theta) - np.pi * np.sin(lat)) / (
+            2 + 2 * np.cos(2 * theta)
+        )
+    return theta
 
 
 def _points(coordinates: list[list[float]]) -> list[tuple[float, float]]:
