@@ -116,7 +116,7 @@ def test_the_cli_bundles_and_deploys(
 ) -> None:
     monkeypatch.setenv("HF_TOKEN", "t")
     hub = FakeHub()
-    monkeypatch.setattr("panache_archive.cli.HfApi", lambda token: hub)
+    monkeypatch.setattr("panache_archive.cli.HfApi", lambda **_kwargs: hub)
     card = package(tmp_path / "space", {"Dockerfile": "FROM python\n"})
     pins = tmp_path / "pins.txt"
     pins.write_text("numpy==2\n", encoding="utf-8")
