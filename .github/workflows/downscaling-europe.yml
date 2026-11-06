@@ -1,0 +1,138 @@
+name: Downscaling inputs, Europe
+
+# Builds what Panache's downscaling learns from over Europe into the release
+# downscaling-europe-v1, France's `downscaling-v1` staying as it is: each pollutant's daily values
+# at the stations of 18 countries, every station type kept, from the EEA's validated hours (read
+# and dropped), and the 1 km fixed layers over 35-71.5° N, 11° W-32° E (GHS-POP, GHS-BUILT-S, the
+# Copernicus DEM and Natural Earth's land of those countries, cut by GDAL). Nothing else is
+# published here: the models and maps have their own workflows. SO₂ is left out: at 1 km it did
+# not beat CAMS over France (Panache's D74).
+# Labelling a pull request `pilot-downscaling-europe` builds two countries' PM2.5 and the whole
+# fixed layers as the run's artifacts, without touching the release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: "The EEA's country codes, a JSON list"
+        default: >-
+          ["FR","GB","IE","ES","PT","IT","CH","DE","AT","CZ","PL","SE","NO","FI","DK","NL","BE","LU"]
+      pollutants:
+        description: "The pollutants' stations to build, a JSON list"
+        default: '["pm2_5", "nitrogen_dioxide", "pm10", "ozone"]'
+      static:
+        description: "Build the 1 km fixed layers too"
+        type: boolean
+        default: true
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: downscaling-europe-${{ github.event_name == 'workflow_dispatch' && 'build' || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: downscaling-europe-v1
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  release:
+    name: Release
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "Downscaling inputs over Europe"
+          --notes-file docs/downscaling-europe-release.md
+
+  stations:
+    name: Stations, ${{ matrix.country }} ${{ matrix.pollutant }}
+    needs: release
+    if: >
+      always() && needs.release.result != 'failure'
+      && (github.event_name == 'workflow_dispatch'
+      || github.event.label.name == 'pilot-downscaling-europe')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        country: ${{ fromJSON(inputs.countries || '["LU", "GB"]') }}
+        pollutant: ${{ fromJSON(inputs.pollutants || '["pm2_5"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build
+        run: >
+          uv run panache-archive stations --country "${{ matrix.country }}"
+          --pollutant "${{ matrix.pollutant }}" --out dist
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.parquet --clobber
+      - name: Keep as the pilot's artifact
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stations-${{ matrix.country }}-${{ matrix.pollutant }}
+          path: dist/
+
+  static:
+    name: Fixed layers
+    needs: release
+    if: >
+      always() && needs.release.result != 'failure'
+      && ((github.event_name == 'workflow_dispatch' && inputs.static)
+      || github.event.label.name == 'pilot-downscaling-europe')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Install GDAL
+        run: sudo apt-get update -q && sudo apt-get install -y -q gdal-bin
+      - name: Cut the sources onto the grid
+        env:
+          GDAL_DISABLE_READDIR_ON_OPEN: EMPTY_DIR
+          CPL_VSIL_CURL_ALLOWED_EXTENSIONS: .tif
+          GDAL_CACHEMAX: "2048"
+        run: scripts/static-layers.sh "$RUNNER_TEMP/layers" europe
+      - name: Build
+        run: uv run panache-archive static --layers "$RUNNER_TEMP/layers" --region europe --out dist
+      - name: Report the layers' size
+        run: du -sh "$RUNNER_TEMP/layers" dist/* | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.npz --clobber
+      - name: Keep as the pilot's artifact
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: static-europe
+          path: dist/
+          retention-days: 7

@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from helpers import REGULAR_LATS, REGULAR_LONS, FakeAds, FakeOpenMeteo, on_regular_grid
-from panache_archive import cells, cli, era5, merra2
+from panache_archive import cells, cli, era5, merra2, static
 from panache_archive.build import Job, to_table
 from panache_archive.check import EUROPE_PLACES, PLACES
 from panache_archive.variables import Reanalysis, Variable
@@ -357,24 +357,33 @@ def test_stations_builds_last_years_means_by_default(
 def test_static_reads_gdals_four_cuts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    asked: list[tuple[Path, ...]] = []
+    asked: list[tuple[object, ...]] = []
 
-    def build(population: Path, built_up: Path, elevation: Path, land: Path, out: Path) -> Path:
-        asked.append((population, built_up, elevation, land, out))
+    def build(
+        population: Path,
+        built_up: Path,
+        elevation: Path,
+        land: Path,
+        out: Path,
+        *,
+        region: static.Region,
+    ) -> Path:
+        asked.append((population, built_up, elevation, land, out, region))
         return out / "static.npz"
 
     monkeypatch.setattr("panache_archive.static.build", build)
 
     code = cli.main(["static", "--layers", str(tmp_path), "--out", "dist"])
+    europe = cli.main(["static", "--layers", str(tmp_path), "--out", "dist", "--region", "europe"])
 
-    assert code == 0
-    assert asked == [
-        (
-            tmp_path / "population.tif",
-            tmp_path / "built_up.tif",
-            tmp_path / "elevation.tif",
-            tmp_path / "land.tif",
-            Path("dist"),
-        )
-    ]
-    assert capsys.readouterr().out.strip() == str(Path("dist") / "static.npz")
+    assert code == europe == 0
+    assert asked[0] == (
+        tmp_path / "population.tif",
+        tmp_path / "built_up.tif",
+        tmp_path / "elevation.tif",
+        tmp_path / "land.tif",
+        Path("dist"),
+        static.REGIONS["france"],
+    )
+    assert asked[1][-1] is static.REGIONS["europe"]
+    assert capsys.readouterr().out.split()[0] == str(Path("dist") / "static.npz")
