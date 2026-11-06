@@ -3,8 +3,7 @@ name: Downscaling experiment
 # Measures Panache's downscaling to 1 km (Panache's D74) before its maps are built: its model
 # against CAMS alone, out of station and out of area, at the background stations it never saw.
 # Each pollutant runs in its own job; the table goes to the run's summary, the full results to the
-# job's artifact. With `overseas`, it measures instead what France's stations off its grid cost the
-# models (Panache's D79): the others, predicted by models trained with and without them.
+# job's artifact.
 
 on:
   workflow_dispatch:
@@ -15,10 +14,6 @@ on:
       pollutants:
         description: "The pollutants to measure, a JSON list"
         default: '["pm10", "ozone", "sulphur_dioxide"]'
-      overseas:
-        description: "Measure what France's overseas stations cost the models"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -56,11 +51,10 @@ jobs:
       - name: Experiment
         env:
           POLLUTANT: ${{ matrix.pollutant }}
-          OVERSEAS: ${{ inputs.overseas && '--overseas' || '' }}
         run: |
           mkdir -p out
           /tmp/panache/bin/panache-downscaling-experiment --archive data/archive \
-            --pollutants "$POLLUTANT" $OVERSEAS --out "out/experiment-$POLLUTANT.json" \
+            --pollutants "$POLLUTANT" --out "out/experiment-$POLLUTANT.json" \
             | tee "out/experiment-$POLLUTANT.md"
           cat "out/experiment-$POLLUTANT.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
