@@ -36,6 +36,9 @@ class Box:
 
 FRANCE: Final = Box(south=41.0, north=51.5, west=-5.5, east=10.0)
 """Mainland France and Corsica with a margin, sea included: 105 by 155 cells."""
+DOWNSCALED_EUROPE: Final = Box(south=35.0, north=71.5, west=-11.0, east=32.0)
+"""Where Panache's downscaling reaches beyond France: mainland Europe's western and northern
+countries, from Ireland to Finland, on the edges of CAMS's cells since 2020."""
 EUROPE: Final = Box(south=29.9, north=72.1, west=-25.1, east=45.1)
 """The whole CAMS Europe grid, 30-72° N and 25° W-45° E, edge cells of both grids included:
 420 by 700 cells since 2020."""

@@ -1,8 +1,9 @@
-"""Fixed layers over France at 30 arc seconds (~1 km): what places a point within its CAMS cell,
-for Panache's downscaling (Panache's D74).
+"""Fixed layers at 30 arc seconds (~1 km): what places a point within its CAMS cell, for
+Panache's downscaling (Panache's D74).
 
-The grid is 1/120° inside France's box (41 to 51.5° N, 5.5° W to 10° E): 1,260 by 1,860 cells,
-twelve by twelve in each 0.1° cell of CAMS, whose edges it shares.
+The grid is 1/120° inside a region's box, twelve by twelve cells in each 0.1° cell of CAMS, whose
+edges it shares: France's (41 to 51.5° N, 5.5° W to 10° E), 1,260 by 1,860 cells, or Europe's
+(35 to 71.5° N, 11° W to 32° E), 4,380 by 5,160 cells.
 
 - **Population** (inhabitants per km²): JRC's GHS-POP, epoch 2020, release 2023A, on this very
   grid (`GHS_POP_E2020_GLOBE_R2023A_4326_30ss`): residents per cell, divided by the cell's area.
@@ -12,6 +13,7 @@ twelve by twelve in each 0.1° cell of CAMS, whose edges it shares.
   NaN where it has no tile (the sea).
 - **Land** (share of the cell): Natural Earth's land, lakes taken out, at 1:10 million (public
   domain), burnt on cells ten times finer and averaged: what the maps keep (the sea is not drawn).
+  Over Europe, only the land of the countries mapped, so that the maps stop at their borders.
 
 GDAL cuts and averages the sources onto the grid (`scripts/static-layers.sh`); this module reads
 its four GeoTIFFs, checks they lie on the grid, and writes one `.npz` asset.
@@ -19,6 +21,7 @@ its four GeoTIFFs, checks they lie on the grid, and writes one `.npz` asset.
 
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,14 +31,13 @@ import numpy as np
 import tifffile
 from numpy.typing import NDArray
 
-from panache_archive.grid import FRANCE, Box
+from panache_archive.grid import DOWNSCALED_EUROPE, FRANCE, Box
 
 FloatArray = NDArray[np.float64]
 
 CELLS_PER_DEGREE: Final = 120
 EARTH_RADIUS_KM: Final = 6371.0088
 """The mean radius (IUGG)."""
-ASSET: Final = "static-fr-1km.npz"
 SOURCES: Final = {
     "population": "JRC GHS-POP R2023A, epoch 2020, 30 arc seconds, WGS 84 (CC-BY 4.0), "
     "doi:10.2905/2FF68A52-5B5B-4A22-8F40-C41DA8332CFE",
@@ -85,7 +87,26 @@ class Grid:
         return np.asarray(EARTH_RADIUS_KM**2 * width * (np.sin(north) - np.sin(south)), np.float64)
 
 
+@dataclass(frozen=True, slots=True)
+class Region:
+    """A grid of fixed layers, and the asset that holds them."""
+
+    grid: Grid
+    asset: str
+    land: str
+    """Whose land the layer `land` is the share of."""
+
+
 FRANCE_1KM: Final = Grid(FRANCE, CELLS_PER_DEGREE)
+EUROPE_1KM: Final = Grid(DOWNSCALED_EUROPE, CELLS_PER_DEGREE)
+REGIONS: Final[Mapping[str, Region]] = {
+    "france": Region(FRANCE_1KM, "static-fr-1km.npz", "all land"),
+    "europe": Region(
+        EUROPE_1KM,
+        "static-europe-1km.npz",
+        "the countries mapped, scripts/static-layers.sh's list",
+    ),
+}
 
 
 def read_layer(path: Path, grid: Grid) -> FloatArray:
@@ -135,9 +156,10 @@ def build(
     land: Path,
     out: Path,
     *,
-    grid: Grid = FRANCE_1KM,
+    region: Region = REGIONS["france"],
 ) -> Path:
     """The `.npz` asset: the four layers, rows from the south, and what they are."""
+    grid = region.grid
     layers = {
         "population": population_density(read_layer(population, grid), grid),
         "built_up": built_up_share(read_layer(built_up, grid), grid),
@@ -159,11 +181,12 @@ def build(
             "elevation": "m",
             "land": "share",
         },
+        "land": region.land,
         "sources": SOURCES,
         "built": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     out.mkdir(parents=True, exist_ok=True)
-    path = out / ASSET
+    path = out / region.asset
     arrays: dict[str, Any] = {name: values.astype(np.float32) for name, values in layers.items()}
     np.savez_compressed(
         path, lats=grid.lats, lons=grid.lons, about=np.array(json.dumps(about)), **arrays

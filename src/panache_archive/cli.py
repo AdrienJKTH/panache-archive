@@ -204,6 +204,7 @@ def _static(args: argparse.Namespace) -> int:
         layers / "elevation.tif",
         layers / "land.tif",
         Path(args.out),
+        region=static.REGIONS[args.region],
     )
     print(path)
     return 0
@@ -324,6 +325,7 @@ def _parser() -> argparse.ArgumentParser:
         "static", help="build the 1 km fixed layers from GDAL's cuts (scripts/static-layers.sh)"
     )
     fixing.add_argument("--layers", required=True, help="the folder of the cut GeoTIFFs")
+    fixing.add_argument("--region", default="france", choices=sorted(static.REGIONS))
     fixing.add_argument("--out", default="dist", help="where the asset is written")
     fixing.set_defaults(run=_static)
 

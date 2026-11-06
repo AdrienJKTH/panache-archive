@@ -133,6 +133,17 @@ What Panache's downscaling of CAMS to 1 km over France learns from and maps with
 - `stations-fr-<pollutant>.parquet` (`pm2_5`, `nitrogen_dioxide`, `pm10`, `ozone`, `sulphur_dioxide`): one row per sampling point and UTC day (`sampling_point`, `day`, `mean` in µg/m³, `hours`, the day's valid hours), from the EEA's validated hours (E1a), 2013 to the last complete year. `mean` is the statistic the European Air Quality Index classes the pollutant by, named in the metadata (`statistic`) and computed as the CAMS days are (`daily`): the daily mean, from at least 18 valid hours; for ozone, the day's maximum 8-hour mean, from at least 18 valid 8-hour means of at least 6 hours. The files' hours are UTC+1. Each point's station, position, altitude, type and area, from the EEA's metadata, are in the asset's `panache_archive` metadata (`points`).
 - `static-fr-1km.npz`: `population` (inhabitants/km², GHS-POP 2020), `built_up` (share of the cell, GHS-BUILT-S 2020) and `elevation` (m, Copernicus DEM GLO-90 averaged; 0 or NaN at sea) and `land` (share of the cell on land, Natural Earth 1:10m land without its lakes) on a 1/120° grid over France's box (1,260 by 1,860 cells, twelve by twelve per CAMS cell, rows from the south), with `lats`, `lons` and `about` (JSON). GDAL cuts the sources onto the grid (`scripts/static-layers.sh`).
 
+The same inputs beyond France (Panache's D78), built by the [`Downscaling inputs, Europe`](.github/workflows/downscaling-europe.yml) workflow into the release `downscaling-europe-v1`, France's staying as it is:
+
+- `stations-<country>-<pollutant>.parquet` for 18 countries (FR, GB, IE, ES, PT, IT, CH, DE, AT, CZ, PL, SE, NO, FI, DK, NL, BE, LU) and four pollutants (not SO₂, which did not beat CAMS over France), every station type kept. The EEA's validated series of Great Britain end in 2019.
+- `static-europe-1km.npz`: the same four layers on a 1/120° grid over 35-71.5° N, 11° W-32° E, 4,380 by 5,160 cells, `land` being the share of each cell on the land of those countries and their small neighbours (Natural Earth's countries, by `ADM0_A3`).
+
+```bash
+gh workflow run downscaling-europe.yml
+```
+
+Labelling a pull request `pilot-downscaling-europe` builds two countries' PM2.5 and the whole fixed layers as the run's artifacts.
+
 ## Domain maps
 
 Panache's map colourings over the whole CAMS Europe domain (Panache's D78), every day from 2013, in the release `maps-europe-v1`: one `map-<layer>-<year>.days` file per colouring and year, ~2 to 20 KB a day, read a day at a time over HTTP ranges (the format of the downscaled maps below, classes stored at a step of 1):

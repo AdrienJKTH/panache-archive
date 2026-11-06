@@ -42,6 +42,16 @@ def test_the_grid_shares_the_cams_cells_edges() -> None:
     assert grid.lats[-1] == pytest.approx(51.5 - grid.step / 2)
 
 
+def test_europe_s_grid_shares_the_cams_cells_edges_too() -> None:
+    grid = static.EUROPE_1KM
+
+    assert grid.shape == (4380, 5160)
+    assert grid.box.south * 10 == pytest.approx(round(grid.box.south * 10))
+    assert grid.box.west * 10 == pytest.approx(round(grid.box.west * 10))
+    assert grid.shape[0] % 12 == grid.shape[1] % 12 == 0
+    assert static.REGIONS["europe"].grid is grid
+
+
 def test_cells_cover_the_sphere_between_their_edges() -> None:
     grid = Grid(Box(south=0.0, north=1.0, west=0.0, east=1.0), static.CELLS_PER_DEGREE)
 
@@ -122,9 +132,10 @@ def test_build_writes_the_four_layers_and_what_they_are(tmp_path: Path) -> None:
     shore[0, 1] = 1.0000001
     land = geotiff(tmp_path / "land.tif", shore)
 
-    path = static.build(population, built, dem, land, tmp_path / "dist", grid=SMALL)
+    region = static.Region(SMALL, "small.npz", "all land")
+    path = static.build(population, built, dem, land, tmp_path / "dist", region=region)
 
-    assert path.name == static.ASSET
+    assert path.name == "small.npz"
     with np.load(path) as asset:
         assert sorted(asset.files) == [
             "about",
