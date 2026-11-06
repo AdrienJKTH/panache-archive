@@ -15,6 +15,9 @@ on:
       only:
         description: "One block to build, such as N40E005; empty for all"
         default: ""
+      sources_run:
+        description: "A run whose `fine-sources` artifact to reuse; empty to fetch them again"
+        default: ""
   pull_request:
     types: [labeled]
 
@@ -70,12 +73,15 @@ jobs:
                 --notes-file docs/fine-release.md
           done
       - name: Ask the CLMS for CORINE over Europe
+        if: inputs.sources_run == ''
         env:
           CLMS_SERVICE_KEY: ${{ secrets.CLMS_SERVICE_KEY }}
         run: scripts/clms-corine.sh /mnt/work/sources/corine.zip
       - name: Keep the major roads
+        if: inputs.sources_run == ''
         run: scripts/fine-roads.sh "$ROADS" /mnt/work/sources/roads.osm.pbf
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.sources_run == ''
         with:
           name: fine-sources
           path: /mnt/work/sources/
@@ -88,6 +94,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     permissions:
+      actions: read
       contents: write
     strategy:
       fail-fast: false
@@ -107,6 +114,8 @@ jobs:
         with:
           name: fine-sources
           path: /mnt/work/sources
+          run-id: ${{ inputs.sources_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Cut the sources onto the grid
         run: >
           scripts/fine-layers.sh /mnt/work/layers /mnt/work/sources/corine.zip

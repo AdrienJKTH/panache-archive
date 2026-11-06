@@ -68,9 +68,12 @@ clc=$(find "$work/corine" -name '*.tif' -printf '%s %p\n' | sort -n | tail -1 | 
 gdalwarp -q -t_srs EPSG:4326 "${grid[@]}" -r near -ot Byte "$clc" "$work/corine.tif"
 rm -rf "$work/corine"
 
-# The block's major roads, from those `fine-roads.sh` kept.
-osmium extract -b "$west,$south,$east,$north" -o "$work/block.osm.pbf" "$roads"
+# The block's major roads, from those `fine-roads.sh` kept. Its regions are fetched over two hours,
+# so Geofabrik's daily update can come between two of them: an object at a border may then be there
+# in two versions, which only a history file may hold, and `time-filter` keeps the latest.
+osmium time-filter -o "$work/latest.osm.pbf" "$roads"
+osmium extract -b "$west,$south,$east,$north" -o "$work/block.osm.pbf" "$work/latest.osm.pbf"
 osmium export -f geojsonseq -o "$work/roads.geojsonseq" --geometry-types=linestring \
   "$work/block.osm.pbf"
-rm "$work/block.osm.pbf"
+rm "$work/latest.osm.pbf" "$work/block.osm.pbf"
 ls -l "$work"
