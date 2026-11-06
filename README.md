@@ -168,6 +168,10 @@ gh workflow run downscaled.yml -f panache=main -f years=all
 
 Daily maps of a town at 3 arc seconds (~90 by 65 m), 2013 to the last complete year (Panache's D74), in the release `downscaled-towns-v1`: NO₂'s daily mean over Paris first, one `downscaled-<pollutant>-<town>-<year>.days` file per pollutant, town and year, in the format of the downscaled maps, and the model (`downscaling-fine-<pollutant>.lgb.txt`). All of France on this grid could not be stored, so towns are built one at a time. The [`Town maps`](.github/workflows/towns.yml) workflow trains the fine model the release lacks on the EEA's background and traffic stations, then builds the years the release lacks, one job each; with `days`, a pilot builds each year's first days as the run's artifacts. `Mirror` copies them to Hugging Face.
 
+## The compute Space
+
+Panache's button "compute in high definition" calls a free Hugging Face Space, [`adrien4916/panache-compute`](https://huggingface.co/spaces/adrien4916/panache-compute), which computes a view at ~100 m on request (Panache's D74). A public Space's image can be pulled by anyone, and Panache's repository is private, so the [`Compute Space`](.github/workflows/space.yml) workflow (`panache-archive space`) deploys only what `panache.compute_app` and `panache.fetch_archive` import, worked out from their imports, with the Dockerfile and card of [`space/`](space/). The Space builds itself and its data from this repository's public releases.
+
 ## Fine layers
 
 Fixed layers at 3 arc seconds (~90 by 65 m) over Europe, as far as CORINE covers it, for Panache's downscaling below 1 km (Panache's D74), in the releases `fine-europe-west-v1` and `fine-europe-east-v1`, split at 15° E since a release holds at most 1,000 assets (`fine-v1` holds France's box, on which the first fine model was trained): one `fine-<south><west>.npz` per 1° tile holding land, rows from the south, ten by ten cells in each 30″ cell of the 1 km layers.

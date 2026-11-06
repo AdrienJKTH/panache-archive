@@ -1,6 +1,6 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
-`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static`, `fine` and
-`fine-plan`, as the
+`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static`, `fine`,
+`fine-plan` and `space`, as the
 workflows run them."""
 
 import argparse
@@ -15,6 +15,8 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from huggingface_hub import HfApi
+
 from panache_archive import (
     ads,
     check,
@@ -23,6 +25,7 @@ from panache_archive import (
     merra2,
     mirror,
     plan,
+    space,
     static,
     stations,
     supervise,
@@ -217,6 +220,18 @@ def _fine(args: argparse.Namespace) -> int:
     return 0
 
 
+def _space(args: argparse.Namespace) -> int:
+    token = os.environ.get("HF_TOKEN", "")
+    if not token:
+        print("HF_TOKEN is not set: Hugging Face would refuse the Space", file=sys.stderr)
+        return 2
+    out = Path(args.out)
+    files = space.bundle(Path(args.source), Path(args.space), Path(args.requirements), out)
+    space.deploy(HfApi(token=token), out)
+    print(f"{len(files)} files of Panache deployed to {space.REPOSITORY}")
+    return 0
+
+
 def _fine_plan(args: argparse.Namespace) -> int:
     print(json.dumps(fine.plan(args.only)))
     return 0
@@ -341,6 +356,14 @@ def _parser() -> argparse.ArgumentParser:
         help="the block the cuts cover",
     )
     finer.set_defaults(run=_fine)
+    spacing = commands.add_parser(
+        "space", help="deploy the Hugging Face Space that computes views at ~100 m"
+    )
+    spacing.add_argument("--source", required=True, help="Panache's backend/src")
+    spacing.add_argument("--space", required=True, help="the folder of its Dockerfile and card")
+    spacing.add_argument("--requirements", required=True, help="the pinned dependencies")
+    spacing.add_argument("--out", required=True, help="where the Space's files are gathered")
+    spacing.set_defaults(run=_space)
     fine_plan = commands.add_parser(
         "fine-plan", help="print the fine layers' blocks as the workflow's matrix"
     )
