@@ -1,0 +1,53 @@
+name: Compute Space
+
+# Deploys the Hugging Face Space that computes views at ~100 m (Panache's D74): the Dockerfile and
+# card of `space/`, and of Panache's backend, checked out at the commit asked with the deploy key
+# PANACHE_DEPLOY_KEY, only what `panache.compute_app` imports: a public Space's image can be pulled
+# by anyone, and Panache's repository is private. The Space then builds itself, its data included.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to deploy"
+        default: main
+
+concurrency:
+  group: space
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install
+        run: uv sync --locked
+      - name: Pin the Space's dependencies from Panache's lock
+        working-directory: panache/backend
+        run: >
+          uv export --frozen --no-dev --no-hashes --no-emit-project
+          --output-file "$RUNNER_TEMP/requirements.txt"
+      - name: Deploy
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: >
+          uv run panache-archive space --source panache/backend/src --space space
+          --requirements "$RUNNER_TEMP/requirements.txt" --out "$RUNNER_TEMP/space"
+          | tee -a "$GITHUB_STEP_SUMMARY"
