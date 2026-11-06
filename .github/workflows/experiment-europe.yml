@@ -1,0 +1,73 @@
+name: Downscaling experiment, Europe
+
+# Judges Panache's downscaling to 1 km over Europe before any map (Panache's D79): its model
+# against CAMS alone at the background stations of 18 countries, out of area and out of country,
+# each country apart. It reads the stations and fixed layers of downscaling-europe-v1, and takes
+# CAMS and ERA5 from cams-europe-v1 and era5-europe-v1 one year at a time, in memory (~4 GB), so it
+# needs no room on disk. Each pollutant runs in its own job, under GitHub's 6 hours; the tables go
+# to the run's summary, the full results to the job's artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      pollutants:
+        description: "The pollutants to measure, a JSON list"
+        default: '["pm2_5", "nitrogen_dioxide", "pm10", "ozone"]'
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: Experiment, ${{ matrix.pollutant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        pollutant: ${{ fromJSON(inputs.pollutants) }}
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Fetch the stations and the fixed layers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLLUTANT: ${{ matrix.pollutant }}
+        run: >
+          gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs
+          --pattern "stations-*-$POLLUTANT.parquet" --pattern "static-europe-1km.npz"
+      - name: Experiment
+        env:
+          POLLUTANT: ${{ matrix.pollutant }}
+        run: |
+          mkdir -p out
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -v -o out/time.txt \
+            /tmp/panache/bin/panache-downscaling-experiment --europe inputs \
+            --pollutants "$POLLUTANT" --out "out/experiment-$POLLUTANT.json" \
+            | tee "out/experiment-$POLLUTANT.md"
+          {
+            cat "out/experiment-$POLLUTANT.md"
+            grep -E "Elapsed|Maximum resident" out/time.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: experiment-europe-${{ matrix.pollutant }}
+          path: out/
