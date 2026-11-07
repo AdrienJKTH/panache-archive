@@ -6,11 +6,14 @@ name: Downscaled maps, Europe
 # asked with the deploy key PANACHE_DEPLOY_KEY, Panache's repository being private): each
 # pollutant's model is trained once on the background stations of every country, reading CAMS and
 # ERA5 over the whole domain (cams-europe-v1, era5-europe-v1) a year at a time, in memory. A year
-# of ~7.8 million cells a day outlasts a job's 6 hours, so each pollutant-year is shared between
-# `parts` jobs, then joined into one `.days` file. The defaults are what Adrien approved on
-# 2026-11-07, NO₂ in 2025. With `days`, a pilot builds the year's first days, shared between the
-# parts as a year is, and keeps the model and the maps as the run's artifacts, the release
-# untouched.
+# of ~7.8 million cells a day outlasts a job's 6 hours (~85 s a day, ~8.6 hours a year), so each
+# pollutant-year is shared between `parts` jobs: each publishes its part, and the last one in joins
+# them into the year's `.days` file and drops them, so that a year shows as soon as it is built and
+# a failed part holds back its year alone. The latest years come first, and at most 16 jobs run at
+# once, leaving GitHub's other 4 to the live maps and the supervisor. The defaults are what Adrien
+# approved on 2026-11-07: NO₂ in 2025 first, then "il faut tout", every pollutant and year. With
+# `days`, a pilot builds the year's first days, shared between the parts as a year is, and keeps
+# the model and the maps as the run's artifacts, the release untouched.
 
 on:
   workflow_dispatch:
@@ -19,11 +22,11 @@ on:
         description: "The commit, branch or tag of AdrienJKTH/panache whose backend builds the maps"
         default: main
       years:
-        description: "A year, or a span such as 2023-2025"
-        default: "2025"
+        description: "A year, or a span such as 2023-2025, built from the latest"
+        default: "2013-2025"
       pollutants:
         description: "The pollutants to map, a JSON list"
-        default: '["nitrogen_dioxide"]'
+        default: '["nitrogen_dioxide", "pm2_5", "pm10", "ozone"]'
       parts:
         description: "The jobs a pollutant-year is shared between, each under 6 hours"
         default: "3"
@@ -95,7 +98,7 @@ jobs:
           built=$(gh release view "$RELEASE" --json assets --jq '.assets[].name' 2>/dev/null || true)
           years=$(jq -nc --argjson first "$first" --argjson last "$last" --arg built "$built" \
             --arg pilot "$DAYS" --argjson pollutants "$POLLUTANTS" '
-            [range($first; $last + 1) as $year
+            [range($last; $first - 1; -1) as $year
              | $pollutants[] as $pollutant
              | select($pilot != ""
                  or (($built | split("\n")) | index("downscaled-\($pollutant)-\($year).days") | not))
@@ -154,8 +157,11 @@ jobs:
     if: needs.train.outputs.parts != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
+      max-parallel: 16
       matrix:
         include: ${{ fromJSON(needs.train.outputs.parts) }}
     steps:
@@ -193,7 +199,48 @@ jobs:
             year --pollutant "$POLLUTANT" --year "$YEAR" --models models --part "$PART" \
             ${DAYS:+--days "$DAYS"} --out dist
           grep -E "Elapsed|Maximum resident" time.txt >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Publish the part, and the year once its parts are all in
+        if: env.DAYS == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLLUTANT: ${{ matrix.pollutant }}
+          YEAR: ${{ matrix.year }}
+          OF: ${{ matrix.of }}
+        run: |
+          stem="downscaled-$POLLUTANT-$YEAR"
+          listed() {
+            gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name'
+          }
+          gh release upload "$RELEASE" dist/"$stem"-part*.days --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          names=$(listed)
+          for part in $(seq 1 "$OF"); do
+            if ! grep -qx "$stem-part$part.days" <<< "$names"; then
+              echo "Part $part of $OF is not in yet: the last part in joins the year." \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          # Two parts ending together may both join: the same file is then uploaded twice, and
+          # one may find the parts already dropped by the other.
+          if ! gh release download "$RELEASE" --repo "$GITHUB_REPOSITORY" --dir parts \
+            --pattern "$stem-part*.days"; then
+            grep -qx "$stem.days" <<< "$(listed)" && exit 0
+            exit 1
+          fi
+          mapfile -t parts < <(ls parts/"$stem"-part*.days | sort -V)
+          /tmp/panache/bin/panache-downscaling-maps join --pollutant "$POLLUTANT" --year "$YEAR" \
+            --parts "${parts[@]}" --out joined
+          gh release upload "$RELEASE" "joined/$stem.days" --repo "$GITHUB_REPOSITORY" --clobber
+          for part in $(seq 1 "$OF"); do
+            gh release delete-asset "$RELEASE" "$stem-part$part.days" --repo "$GITHUB_REPOSITORY" \
+              --yes || true
+          done
+          du -h "joined/$stem.days" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Keep as the pilot's artifact
+        if: env.DAYS != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: part-${{ matrix.pollutant }}-${{ matrix.year }}-${{ matrix.part }}
           path: dist/
@@ -201,8 +248,9 @@ jobs:
           compression-level: 0 # zstd already
 
   join:
-    name: Join ${{ matrix.pollutant }} ${{ matrix.year }}
+    name: Join the pilot's ${{ matrix.pollutant }} ${{ matrix.year }}
     needs: [train, build]
+    if: inputs.days != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -239,13 +287,7 @@ jobs:
           /tmp/panache/bin/panache-downscaling-maps join --pollutant "$POLLUTANT" --year "$YEAR" \
             --parts "${parts[@]}" --out dist
           du -h dist/*.days | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Publish
-        if: env.DAYS == ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE" dist/*.days --repo "$GITHUB_REPOSITORY" --clobber
       - name: Keep as the pilot's artifact
-        if: env.DAYS != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: downscaled-${{ matrix.pollutant }}-${{ matrix.year }}
