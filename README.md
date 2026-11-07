@@ -188,10 +188,10 @@ gh workflow run downscaled.yml -f panache=main -f years=2021 -f days=3
 gh workflow run downscaled.yml -f panache=main -f years=all
 ```
 
-Over the 18 countries of `downscaling-europe-v1` (Panache's D79), the [`Downscaled maps, Europe`](.github/workflows/downscaled-europe.yml) workflow builds the release `downscaled-europe-v1`, NO₂ in 2025 first. Its models learn from every country's stations and read CAMS and ERA5 over the whole domain (`cams-europe-v1`, `era5-europe-v1`), a year at a time in memory. A year of ~7.8 million cells a day outlasts a job's 6 hours, so each pollutant-year is shared between `parts` jobs and joined into one `.days` file. With `days`, a pilot builds the year's first days, shared between the parts as a year is, and keeps them and the model as the run's artifacts.
+Over the 18 countries of `downscaling-europe-v1` (Panache's D79), the [`Downscaled maps, Europe`](.github/workflows/downscaled-europe.yml) workflow builds the release `downscaled-europe-v1`, NO₂ in 2025 first. Its models learn from every country's stations and read CAMS and ERA5 over the whole domain (`cams-europe-v1`, `era5-europe-v1`), a year at a time in memory. A year of ~7.8 million cells a day outlasts a job's 6 hours (~85 s a day), so each pollutant-year is shared between `parts` jobs; each publishes its part, and the last one in joins them into the year's `.days` file, so that a year shows as soon as it is built. The latest years come first, 16 jobs at most at once. With `days`, a pilot builds the year's first days, shared between the parts as a year is, and keeps them and the model as the run's artifacts.
 
 ```bash
-gh workflow run downscaled-europe.yml -f panache=main -f days=6
+gh workflow run downscaled-europe.yml -f panache=main -f days=6 -f years=2025
 gh workflow run downscaled-europe.yml -f panache=main
 ```
 
