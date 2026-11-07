@@ -1,14 +1,17 @@
 name: Live maps
 
-# Builds today to J+3 of Panache's map from CAMS Europe's daily run (Panache's D80) into the
-# release maps-live-v1: one `.days` file a run, ~30 KB, then `live.json`, which names the latest
-# run and which a reader takes first. The run comes from Open-Meteo's public bucket, ~50 MB, about
-# 11:35 UTC. Panache's own backend classes it (`panache-domain-maps`, checked out with the deploy
-# key PANACHE_DEPLOY_KEY, since Panache's repository is private).
+# Builds Panache's map of the present (Panache's D80) into the release maps-live-v1: today to J+3
+# from CAMS Europe's daily run, one `.days` file a run, ~30 KB; the days between the archive and
+# the run from CAMS's daily stream, one `.days` file a year, ~2 MB; then `live.json`, which names
+# them and which a reader takes first. Both come from Open-Meteo's public bucket, the run out about
+# 11:35 UTC. Panache's own backend builds them (`panache-domain-maps live`, checked out with the
+# deploy key PANACHE_DEPLOY_KEY, since Panache's repository is private), and writes only what
+# changed since the last publication.
 #
-# It starts several times a day, as GitHub's cron is late at times and a run may come out late: a
-# run already published is left alone, so a start with nothing new takes under a minute. A run's
-# file never changes once published; files of runs older than KEEP_DAYS are deleted.
+# It starts several times a day, as GitHub's cron is late at times and a run may come out late; a
+# start with nothing new takes under a minute. A published file never changes: the stream's year
+# grows as a new file named after its last day, and a first fill of the year takes a few passes of
+# three months each. Files that `live.json` no longer names are deleted after KEEP_DAYS.
 
 on:
   schedule:
@@ -33,9 +36,9 @@ env:
 
 jobs:
   live:
-    name: Build the latest run
+    name: Build and publish what changed
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -53,38 +56,37 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
-      - name: Is there a new run?
-        id: run
-        run: |
-          latest=$(/tmp/panache/bin/panache-domain-maps latest-run)
-          published=$(gh release download "$RELEASE" --pattern live.json --output - 2> /dev/null \
-            | jq -r .run || true)
-          echo "The bucket's latest run: $latest; published: ${published:-none}" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
-          if [[ "$latest" != "$published" ]]; then echo "new=true" >> "$GITHUB_OUTPUT"; fi
-      - name: Build
-        if: steps.run.outputs.new == 'true'
+      - name: Build what changed
+        id: build
         run: |
           /tmp/panache/bin/panache-domain-maps live --out dist --work "$RUNNER_TEMP/work" \
             | tee -a "$GITHUB_STEP_SUMMARY"
-          du -ch dist/*.days | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ -f dist/live.json ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            du -ch dist/* | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Publish
-        if: steps.run.outputs.new == 'true'
+        if: steps.build.outputs.changed == 'true'
         run: |
           gh release view "$RELEASE" > /dev/null 2>&1 \
             || gh release create "$RELEASE" --title "Panache's map of today and the next days" \
               --notes-file docs/maps-live-release.md --latest=false
-          # The run's file first: `live.json` names it.
-          gh release upload "$RELEASE" dist/*.days --clobber
+          # The files first: `live.json` names them.
+          if compgen -G "dist/*.days" > /dev/null; then
+            gh release upload "$RELEASE" dist/*.days --clobber
+          fi
           gh release upload "$RELEASE" dist/live.json --clobber
-      - name: Delete old runs
-        if: steps.run.outputs.new == 'true'
+      - name: Delete the files live.json no longer names
+        if: steps.build.outputs.changed == 'true'
         run: |
           oldest=$(date -u -d "$KEEP_DAYS days ago" +%F)
+          named=$(jq -r '(.layers | .[]), (.stream[] | .asset)' dist/live.json)
           for asset in $(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE" \
               --jq '.assets[].name | select(endswith(".days"))'); do
-            day=${asset##*-run-}
-            day=${day%.days}
+            if grep -qxF "$asset" <<< "$named"; then continue; fi
+            # Each name ends with its last day: a run's start, a stream's last day.
+            day=${asset%.days}
+            day=${day: -10}
             if [[ "$day" < "$oldest" ]]; then
               gh release delete-asset "$RELEASE" "$asset" --yes
             fi

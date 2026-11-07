@@ -164,11 +164,12 @@ gh workflow run maps.yml -f panache=main -f years=all
 
 ## Live maps
 
-Panache's map of today and the next days (Panache's D80), in the release `maps-live-v1`: one `map-eaqi-run-<day>.days` file a run, ~30 KB, holding the EAQI bands of its four whole UTC days, then `live.json`, which names the latest run. These are CAMS's forecasts, not the reanalysis.
+Panache's map of today and the next days (Panache's D80), in the release `maps-live-v1`: one `map-eaqi-run-<day>.days` file a run, ~30 KB, holding the EAQI bands of its four whole UTC days; one `map-eaqi-stream-<year>-to-<day>.days` file for the days between the archive and the run, ~2 MB a year, from CAMS's daily stream; then `live.json`, which names them. These are CAMS's forecasts, not the reanalysis.
 
 - The [`Live maps`](.github/workflows/live.yml) workflow reads CAMS Europe's daily run from Open-Meteo's public bucket, ~50 MB, out about 11:35 UTC, with no account and no quota, and classes it by Panache's own rules (`panache-domain-maps live`).
-- It starts at 12:05, 14:05, 17:05 and 21:05 UTC, since GitHub's cron is late at times. A run already published is left alone.
-- A run's file never changes once published, and `live.json` is replaced last, so a reader never meets a half-published run. Runs older than a week are deleted.
+- It starts at 12:05, 14:05, 17:05 and 21:05 UTC, since GitHub's cron is late at times. Each start writes only what changed (`panache-domain-maps live`), so a start with nothing new publishes nothing.
+- The stream's days come from the bucket's chunks, 193 hours a file. A first fill of the year adds three months a pass, so it takes a few passes.
+- A file never changes once published, and `live.json` is replaced last, so a reader never meets a half-published day. The files `live.json` no longer names are deleted after a week.
 - GitHub turns scheduled workflows off after 60 days without activity in a repository: Panache shows the run's age, so a stopped workflow can be seen.
 
 ```bash
