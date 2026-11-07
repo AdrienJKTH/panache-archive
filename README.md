@@ -175,6 +175,13 @@ gh workflow run downscaled.yml -f panache=main -f years=2021 -f days=3
 gh workflow run downscaled.yml -f panache=main -f years=all
 ```
 
+Over the 18 countries of `downscaling-europe-v1` (Panache's D79), the [`Downscaled maps, Europe`](.github/workflows/downscaled-europe.yml) workflow builds the release `downscaled-europe-v1`, NO₂ in 2025 first. Its models learn from every country's stations and read CAMS and ERA5 over the whole domain (`cams-europe-v1`, `era5-europe-v1`), a year at a time in memory. A year of ~7.8 million cells a day outlasts a job's 6 hours, so each pollutant-year is shared between `parts` jobs and joined into one `.days` file. With `days`, a pilot keeps the model and each part's first days as the run's artifacts.
+
+```bash
+gh workflow run downscaled-europe.yml -f panache=main -f days=2
+gh workflow run downscaled-europe.yml -f panache=main
+```
+
 ## Town maps
 
 Daily maps of a town at 3 arc seconds (~90 by 65 m), 2013 to the last complete year (Panache's D74), in the release `downscaled-towns-v1`: NO₂'s daily mean over Paris first, one `downscaled-<pollutant>-<town>-<year>.days` file per pollutant, town and year, in the format of the downscaled maps, and the model (`downscaling-fine-<pollutant>.lgb.txt`). All of France on this grid could not be stored, so towns are built one at a time. The [`Town maps`](.github/workflows/towns.yml) workflow trains the fine model the release lacks on the EEA's background and traffic stations, then builds the years the release lacks, one job each; with `days`, a pilot builds each year's first days as the run's artifacts. `Mirror` copies them to Hugging Face.

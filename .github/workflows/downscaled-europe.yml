@@ -1,0 +1,253 @@
+name: Downscaled maps, Europe
+
+# Builds Panache's daily maps at 1 km over the land of the 18 countries of downscaling-europe-v1
+# (Panache's D79) into the release downscaled-europe-v1; France's downscaled-v1 stays as it is.
+# Panache's own backend builds them (`panache-downscaling-maps --europe`, checked out at the commit
+# asked with the deploy key PANACHE_DEPLOY_KEY, Panache's repository being private): each
+# pollutant's model is trained once on the background stations of every country, reading CAMS and
+# ERA5 over the whole domain (cams-europe-v1, era5-europe-v1) a year at a time, in memory. A year
+# of ~7.8 million cells a day outlasts a job's 6 hours, so each pollutant-year is shared between
+# `parts` jobs, then joined into one `.days` file. The defaults are what Adrien approved on
+# 2026-11-07, NO₂ in 2025. With `days`, a pilot builds each part's first days and keeps the model
+# and the maps as the run's artifacts, the release untouched.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache whose backend builds the maps"
+        default: main
+      years:
+        description: "A year, or a span such as 2023-2025"
+        default: "2025"
+      pollutants:
+        description: "The pollutants to map, a JSON list"
+        default: '["nitrogen_dioxide"]'
+      parts:
+        description: "The jobs a pollutant-year is shared between, each under 6 hours"
+        default: "3"
+      days:
+        description: "Only each part's first days (a pilot); empty for whole years"
+        default: ""
+
+concurrency:
+  group: downscaled-europe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: downscaled-europe-v1
+  INPUTS: downscaling-europe-v1
+  POLLUTANTS: ${{ inputs.pollutants }}
+  DAYS: ${{ inputs.days }}
+
+jobs:
+  train:
+    name: Train the models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    outputs:
+      years: ${{ steps.plan.outputs.years }}
+      parts: ${{ steps.plan.outputs.parts }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+      - name: Make sure the release exists
+        if: env.DAYS == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE"
+          --title "The air quality index's pollutants at 1 km over 18 countries of Europe"
+          --notes-file docs/downscaled-europe-release.md
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          YEARS: ${{ inputs.years }}
+          PARTS: ${{ inputs.parts }}
+        run: |
+          case "$YEARS" in
+            *-*) first=${YEARS%-*} last=${YEARS#*-} ;;
+            *) first=$YEARS last=$YEARS ;;
+          esac
+          built=$(gh release view "$RELEASE" --json assets --jq '.assets[].name' 2>/dev/null || true)
+          years=$(jq -nc --argjson first "$first" --argjson last "$last" --arg built "$built" \
+            --arg pilot "$DAYS" --argjson pollutants "$POLLUTANTS" '
+            [range($first; $last + 1) as $year
+             | $pollutants[] as $pollutant
+             | select($pilot != ""
+                 or (($built | split("\n")) | index("downscaled-\($pollutant)-\($year).days") | not))
+             | {pollutant: $pollutant, year: $year}]')
+          parts=$(jq -c --argjson of "$PARTS" \
+            '[.[] as $year | range(1; $of + 1) as $part | $year + {part: $part, of: $of}]' \
+            <<< "$years")
+          echo "years=$years" >> "$GITHUB_OUTPUT"
+          echo "parts=$parts" >> "$GITHUB_OUTPUT"
+          jq -r --argjson of "$PARTS" '"\(length) pollutant-years to build, \($of) parts each"' \
+            <<< "$years" >> "$GITHUB_STEP_SUMMARY"
+      - name: Fetch the stations and the fixed layers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for pollutant in $(jq -r '.[]' <<< "$POLLUTANTS"); do
+            gh release download "$INPUTS" --dir inputs --pattern "stations-*-$pollutant.parquet"
+          done
+          gh release download "$INPUTS" --dir inputs --pattern static-europe-1km.npz
+      - name: Train the models the release lacks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p models
+          # A published model stays: the maps built with it would no longer match a new one. A
+          # pilot trains its own, and keeps it as an artifact.
+          missing=()
+          for pollutant in $(jq -r '.[]' <<< "$POLLUTANTS"); do
+            model="downscaling-$pollutant.lgb.txt"
+            if [ -z "$DAYS" ] && gh release download "$RELEASE" --pattern "$model" --dir models
+            then
+              continue
+            fi
+            missing+=("$pollutant")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            /usr/bin/time -v -o train-time.txt /tmp/panache/bin/panache-downscaling-maps \
+              --europe inputs train --pollutants "${missing[@]}" --out models
+            grep -E "Elapsed|Maximum resident" train-time.txt >> "$GITHUB_STEP_SUMMARY"
+            if [ -z "$DAYS" ]; then
+              for pollutant in "${missing[@]}"; do
+                gh release upload "$RELEASE" "models/downscaling-$pollutant.lgb.txt"
+              done
+            fi
+          fi
+          echo "Trained: ${missing[*]:-none}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: models
+          path: models/
+          retention-days: 3
+
+  build:
+    name: ${{ matrix.pollutant }} ${{ matrix.year }}, part ${{ matrix.part }} of ${{ matrix.of }}
+    needs: train
+    if: needs.train.outputs.parts != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.train.outputs.parts) }}
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+      - name: Fetch the fixed layers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release download "$INPUTS" --repo "$GITHUB_REPOSITORY" --dir inputs
+          --pattern static-europe-1km.npz
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: models
+          path: models
+      - name: Build
+        env:
+          POLLUTANT: ${{ matrix.pollutant }}
+          YEAR: ${{ matrix.year }}
+          PART: ${{ matrix.part }}/${{ matrix.of }}
+        run: |
+          /usr/bin/time -v -o time.txt /tmp/panache/bin/panache-downscaling-maps --europe inputs \
+            year --pollutant "$POLLUTANT" --year "$YEAR" --models models --part "$PART" \
+            ${DAYS:+--days "$DAYS"} --out dist
+          grep -E "Elapsed|Maximum resident" time.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: part-${{ matrix.pollutant }}-${{ matrix.year }}-${{ matrix.part }}
+          path: dist/
+          retention-days: 3
+          compression-level: 0 # zstd already
+
+  join:
+    name: Join ${{ matrix.pollutant }} ${{ matrix.year }}
+    needs: [train, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.train.outputs.years) }}
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: part-${{ matrix.pollutant }}-${{ matrix.year }}-*
+          path: parts
+          merge-multiple: true
+      - name: Join
+        env:
+          POLLUTANT: ${{ matrix.pollutant }}
+          YEAR: ${{ matrix.year }}
+        run: |
+          mapfile -t parts < <(ls parts/downscaled-"$POLLUTANT"-"$YEAR"-part*.days | sort -V)
+          /tmp/panache/bin/panache-downscaling-maps join --pollutant "$POLLUTANT" --year "$YEAR" \
+            --parts "${parts[@]}" --out dist
+          du -h dist/*.days | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        if: env.DAYS == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.days --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Keep as the pilot's artifact
+        if: env.DAYS != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: downscaled-${{ matrix.pollutant }}-${{ matrix.year }}
+          path: dist/
+          retention-days: 7
+          compression-level: 0
