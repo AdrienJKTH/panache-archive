@@ -8,8 +8,9 @@ name: Downscaled maps, Europe
 # ERA5 over the whole domain (cams-europe-v1, era5-europe-v1) a year at a time, in memory. A year
 # of ~7.8 million cells a day outlasts a job's 6 hours, so each pollutant-year is shared between
 # `parts` jobs, then joined into one `.days` file. The defaults are what Adrien approved on
-# 2026-11-07, NO₂ in 2025. With `days`, a pilot builds each part's first days and keeps the model
-# and the maps as the run's artifacts, the release untouched.
+# 2026-11-07, NO₂ in 2025. With `days`, a pilot builds the year's first days, shared between the
+# parts as a year is, and keeps the model and the maps as the run's artifacts, the release
+# untouched.
 
 on:
   workflow_dispatch:
@@ -27,7 +28,7 @@ on:
         description: "The jobs a pollutant-year is shared between, each under 6 hours"
         default: "3"
       days:
-        description: "Only each part's first days (a pilot); empty for whole years"
+        description: "Only the year's first days, shared between the parts (a pilot); empty for all"
         default: ""
 
 concurrency:
