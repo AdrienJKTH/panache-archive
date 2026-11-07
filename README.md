@@ -162,6 +162,19 @@ gh workflow run maps.yml -f panache=main -f pilot=6 -f years=2021
 gh workflow run maps.yml -f panache=main -f years=all
 ```
 
+## Live maps
+
+Panache's map of today and the next days (Panache's D80), in the release `maps-live-v1`: one `map-eaqi-run-<day>.days` file a run, ~30 KB, holding the EAQI bands of its four whole UTC days, then `live.json`, which names the latest run. These are CAMS's forecasts, not the reanalysis.
+
+- The [`Live maps`](.github/workflows/live.yml) workflow reads CAMS Europe's daily run from Open-Meteo's public bucket, ~50 MB, out about 11:35 UTC, with no account and no quota, and classes it by Panache's own rules (`panache-domain-maps live`).
+- It starts at 12:05, 14:05, 17:05 and 21:05 UTC, since GitHub's cron is late at times. A run already published is left alone.
+- A run's file never changes once published, and `live.json` is replaced last, so a reader never meets a half-published run. Runs older than a week are deleted.
+- GitHub turns scheduled workflows off after 60 days without activity in a repository: Panache shows the run's age, so a stopped workflow can be seen.
+
+```bash
+gh workflow run live.yml -f panache=main
+```
+
 ## Downscaled maps
 
 Daily values of the European Air Quality Index's pollutants at 1 km over the land of France's box (PM2.5 and NO₂ first, then PM10, ozone's daily maximum 8-hour mean and SO₂), 2013 to the last complete year (Panache's D74), in the release `downscaled-v1`: one `downscaled-<pollutant>-<year>.days` file per pollutant and year (~1 MB a day, read a day at a time over HTTP ranges), and each pollutant's model (`downscaling-<pollutant>.lgb.txt`).
