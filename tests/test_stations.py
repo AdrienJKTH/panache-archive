@@ -163,6 +163,59 @@ def test_other_units_aggregations_and_gaps_are_left_out() -> None:
     assert found.hours.tolist() == [18]
 
 
+def day_value(
+    day: datetime, value: float | None, validity: int = 1
+) -> tuple[datetime, float | None, str, str, int]:
+    return (day, value, "ug.m-3", "day", validity)
+
+
+def test_a_value_reported_for_the_day_counts_as_that_day_s_mean() -> None:
+    rows = [day_value(datetime(2021, 2, 6), 21.5), day_value(datetime(2021, 2, 7), 8.25)]
+
+    found = stations.daily_means(station_file("SPO-CH0003R_00005_100", rows))
+
+    # The day the file names, not shifted to UTC as an hour is.
+    assert found.days.astype(str).tolist() == ["2021-02-06", "2021-02-07"]
+    assert found.means.tolist() == [21.5, 8.25]
+    assert found.hours.tolist() == [0, 0]
+
+
+def test_hours_win_over_a_day_s_value_and_it_fills_the_days_without() -> None:
+    first = datetime(2021, 2, 6, 1)  # 00:00 UTC
+    rows = [
+        *hours(first, [10.0] * 24),
+        day_value(datetime(2021, 2, 6), 99.0),
+        day_value(datetime(2021, 2, 5), 7.0),
+        day_value(datetime(2021, 2, 8), 9.0),
+    ]
+
+    found = stations.daily_means(station_file("SPO.IT0499A_6001", rows))
+
+    assert found.days.astype(str).tolist() == ["2021-02-05", "2021-02-06", "2021-02-08"]
+    assert found.means.tolist() == [7.0, 10.0, 9.0]
+    assert found.hours.tolist() == [0, 24, 0]
+
+
+def test_a_day_s_invalid_value_is_left_out() -> None:
+    rows = [
+        day_value(datetime(2021, 2, 6), -9999.0, validity=-1),
+        day_value(datetime(2021, 2, 7), None),
+        day_value(datetime(2021, 2, 8), 12.0),
+    ]
+
+    found = stations.daily_means(station_file("SPO.IE.IE001APSample1_6001", rows))
+
+    assert found.days.astype(str).tolist() == ["2021-02-08"]
+
+
+def test_ozone_cannot_come_from_a_day_s_value() -> None:
+    rows = [day_value(datetime(2021, 2, 6), 80.0)]
+
+    found = stations.daily_means(station_file("SPO-FR01011_7", rows), stations.MAX_8H_MEAN)
+
+    assert found.days.size == 0
+
+
 def test_an_hour_held_twice_counts_once() -> None:
     rows = hours(datetime(2021, 2, 6, 1), [10.0] * 18)
     twice = hours(datetime(2021, 2, 6, 1), [70.0])
@@ -219,13 +272,30 @@ def test_files_are_listed_year_by_year_and_joined() -> None:
     urls = stations.list_files("FR", Pollutant.NITROGEN_DIOXIDE, [2013, 2014], read=read)
 
     assert urls == ["https://files/a.parquet", "https://files/b.parquet", "https://files/c.parquet"]
-    assert [(a["dateTimeStart"], a["dateTimeEnd"]) for a in asked] == [
-        ("2013-01-01T00:00:00Z", "2014-01-01T00:00:00Z"),
-        ("2014-01-01T00:00:00Z", "2015-01-01T00:00:00Z"),
+    assert [(a["dateTimeStart"], a["aggregationType"]) for a in asked] == [
+        ("2013-01-01T00:00:00Z", "hour"),
+        ("2013-01-01T00:00:00Z", "day"),
+        ("2014-01-01T00:00:00Z", "hour"),
+        ("2014-01-01T00:00:00Z", "day"),
     ]
+    assert asked[0]["dateTimeEnd"] == "2014-01-01T00:00:00Z"
     assert asked[0]["pollutants"] == ["NO2"]
     assert asked[0]["countries"] == ["FR"]
     assert asked[0]["dataset"] == stations.VALIDATED
+
+
+def test_ozone_lists_only_its_hours() -> None:
+    asked: list[dict[str, object]] = []
+
+    def read(request: urllib.request.Request | str) -> bytes:
+        assert isinstance(request, urllib.request.Request)
+        assert isinstance(request.data, bytes)
+        asked.append(json.loads(request.data))
+        return listing("https://files/a.parquet")
+
+    stations.list_files("FR", Pollutant.OZONE, [2013], read=read)
+
+    assert [a["aggregationType"] for a in asked] == ["hour"]
 
 
 def test_an_unexpected_list_is_refused() -> None:

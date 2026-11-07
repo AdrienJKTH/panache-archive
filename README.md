@@ -135,7 +135,7 @@ What Panache's downscaling of CAMS to 1 km over France learns from and maps with
 
 The same inputs beyond France (Panache's D78), built by the [`Downscaling inputs, Europe`](.github/workflows/downscaling-europe.yml) workflow into the release `downscaling-europe-v1`, France's staying as it is:
 
-- `stations-<country>-<pollutant>.parquet` for 18 countries (FR, GB, IE, ES, PT, IT, CH, DE, AT, CZ, PL, SE, NO, FI, DK, NL, BE, LU) and four pollutants (not SO₂, which did not beat CAMS over France), every station type kept. The EEA's validated series of Great Britain end in 2019.
+- `stations-<country>-<pollutant>.parquet` for 18 countries (FR, GB, IE, ES, PT, IT, CH, DE, AT, CZ, PL, SE, NO, FI, DK, NL, BE, LU) and four pollutants (not SO₂, which did not beat CAMS over France), every station type kept. The EEA's validated series of Great Britain end in 2019. Besides the hours, a mean takes the value a network reports for the whole day on the days without enough hours (`hours` 0, the file's own day): many networks weigh their particles on a filter, all of Switzerland's and nearly all of Ireland's.
 - `static-europe-1km.npz`: the same four layers on a 1/120° grid over 35-71.5° N, 11° W-32° E, 4,380 by 5,160 cells, `land` being the share of each cell on the land of those countries and their small neighbours (Natural Earth's countries, by `ADM0_A3`).
 
 ```bash
