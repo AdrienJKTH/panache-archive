@@ -15,6 +15,7 @@ on:
         MERRA-2,
         Domain maps,
         Live maps,
+        Seasons,
         Downscaling inputs,
         Downscaled maps,
         "Downscaled maps, Europe",

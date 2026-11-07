@@ -176,6 +176,17 @@ Panache's map of today and the next days (Panache's D80), in the release `maps-l
 gh workflow run live.yml -f panache=main
 ```
 
+## Seasons
+
+Each cell's seasonal edges of Panache's *unusual* colouring (Panache's D80), in the release `seasons-europe-v1`: for every calendar date, the six order statistics (p5, p25, p75, p90, p95, p99) of the same season's daily values in every year of the archive, for PM2.5, PM10 and ozone's 8-hour maximum. They class the days after the archive (CAMS's daily stream and latest run) as the archive's are classed. One `.days` file an indicator and edge, 366 frames at 0.1 µg/m³.
+
+- The [`Seasons`](.github/workflows/seasons.yml) workflow shares the rows out among 12 jobs, which read their band of `cams-europe-v1` as the `Domain maps` workflow does, then one job stacks them and publishes. Run it again when the archive gains a year.
+
+```bash
+gh workflow run seasons.yml -f panache=main -f pilot=6
+gh workflow run seasons.yml -f panache=main
+```
+
 ## Downscaled maps
 
 Daily values of the European Air Quality Index's pollutants at 1 km over the land of France's box (PM2.5 and NO₂ first, then PM10, ozone's daily maximum 8-hour mean and SO₂), 2013 to the last complete year (Panache's D74), in the release `downscaled-v1`: one `downscaled-<pollutant>-<year>.days` file per pollutant and year (~1 MB a day, read a day at a time over HTTP ranges), and each pollutant's model (`downscaling-<pollutant>.lgb.txt`).
