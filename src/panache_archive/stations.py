@@ -11,6 +11,12 @@ Index classes the pollutant by (Panache's D43), by the rules the archive's CAMS 
 maximum 8-hour mean, from at least 18 valid 8-hour means of at least 6 hours each. The files'
 hours start at UTC+1, whatever the station's own time zone (Panache's D70).
 
+Many networks report their particles as one value a day, weighed on a filter: all of Switzerland's
+and nearly all of Ireland's, most of Italy's (Panache's D79). A daily mean needs no hours, so
+those values fill the days without enough hours. They are the days the files name, not shifted to
+UTC: a day's value spans the country's own day, ~1 hour off a UTC day. Ozone's maximum 8-hour mean
+cannot come from them.
+
 The EEA's station metadata give each sampling point its station, position, altitude, type
 (traffic, industrial, background) and area (urban, suburban, rural...). They are stored in the
 asset's metadata, one entry per sampling point of the table.
@@ -52,6 +58,9 @@ VALIDATED: Final = 2
 """The service's number for the validated series (E1a); 1 is the up-to-date one, 3 AirBase."""
 FIRST_YEAR: Final = 2013
 """The archive's first year, as CAMS's."""
+HOURLY: Final = "hour"
+DAILY: Final = "day"
+"""The service's and the files' names of an hourly and a daily value."""
 UNIT: Final = "ug.m-3"
 MIN_HOURS: Final = 18
 """Valid hours a UTC day needs for a daily mean (75 %), as CAMS's daily means (Panache's D69)."""
@@ -140,43 +149,47 @@ class PointDays:
     means: NDArray[np.float64]
     """The day's statistic, µg/m³: its mean, or ozone's maximum 8-hour mean."""
     hours: NDArray[np.int64]
-    """Valid hours of the UTC day, 0 to 24 (18 at least for a mean)."""
+    """Valid hours of the UTC day, 18 to 24 for a mean; 0 for a value reported for the day."""
 
 
 def list_files(
     country: str, pollutant: Pollutant, years: Iterable[int], *, read: Read = web.read
 ) -> list[str]:
-    """The files the service lists for `country` and `pollutant`, over each of `years`."""
+    """The files the service lists for `country` and `pollutant`, over each of `years`: those of
+    hourly values, and of daily ones for a pollutant whose statistic they can give."""
     found: set[str] = set()
+    aggregations = (HOURLY,) if pollutant.statistic == MAX_8H_MEAN else (HOURLY, DAILY)
     for year in years:
-        body = {
-            "countries": [country],
-            "cities": [],
-            "pollutants": [pollutant.notation],
-            "dataset": VALIDATED,
-            "source": "API",
-            "dateTimeStart": f"{year}-01-01T00:00:00Z",
-            "dateTimeEnd": f"{year + 1}-01-01T00:00:00Z",
-            "aggregationType": "hour",
-        }
-        request = urllib.request.Request(
-            f"{DOWNLOAD_API}/ParquetFile/urls",
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        # A CSV of one column, "ParquetFileUrl", behind a byte order mark.
-        lines = read(request).decode("utf-8-sig").splitlines()
-        if not lines or lines[0].strip() != "ParquetFileUrl":
-            raise ValueError(f"unexpected list of files from the EEA for {year}")
-        found.update(line.strip() for line in lines[1:] if line.strip())
+        for aggregation in aggregations:
+            body = {
+                "countries": [country],
+                "cities": [],
+                "pollutants": [pollutant.notation],
+                "dataset": VALIDATED,
+                "source": "API",
+                "dateTimeStart": f"{year}-01-01T00:00:00Z",
+                "dateTimeEnd": f"{year + 1}-01-01T00:00:00Z",
+                "aggregationType": aggregation,
+            }
+            request = urllib.request.Request(
+                f"{DOWNLOAD_API}/ParquetFile/urls",
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            # A CSV of one column, "ParquetFileUrl", behind a byte order mark.
+            lines = read(request).decode("utf-8-sig").splitlines()
+            if not lines or lines[0].strip() != "ParquetFileUrl":
+                raise ValueError(f"unexpected list of files from the EEA for {year}")
+            found.update(line.strip() for line in lines[1:] if line.strip())
         logger.info("%s %s %d: %d files listed so far", country, pollutant, year, len(found))
     return sorted(found)
 
 
 def daily_means(content: bytes, statistic: str = MEAN) -> PointDays:
     """A file's daily values: each UTC day's mean, from at least `MIN_HOURS` valid hours, or its
-    maximum 8-hour mean (`MAX_8H_MEAN`), from enough valid 8-hour means (`daily`).
+    maximum 8-hour mean (`MAX_8H_MEAN`), from enough valid 8-hour means (`daily`). A mean's days
+    without enough hours take the value the file reports for the day, if any.
 
     An hour the file holds twice counts once, with its first value.
     """
@@ -192,12 +205,13 @@ def daily_means(content: bytes, statistic: str = MEAN) -> PointDays:
     starts = table["Start"].cast(pa.timestamp("s")).to_numpy() - FILE_HOURS_AHEAD_OF_UTC
     values = table["Value"].cast(pa.float64()).to_numpy(zero_copy_only=False)
     values = np.asarray(values, dtype=np.float64)
-    keep = (
-        (table["AggType"].to_numpy(zero_copy_only=False) == "hour")
-        & (table["Unit"].to_numpy(zero_copy_only=False) == UNIT)
+    aggregation = table["AggType"].to_numpy(zero_copy_only=False)
+    valid = (
+        (table["Unit"].to_numpy(zero_copy_only=False) == UNIT)
         & (table["Validity"].to_numpy() >= 1)
         & ~np.isnan(values)
     )
+    keep = valid & (aggregation == HOURLY)
     hours, first = np.unique(starts[keep], return_index=True)
     hourly = values[keep][first]
     days, index, counts = np.unique(
@@ -209,11 +223,30 @@ def daily_means(content: bytes, statistic: str = MEAN) -> PointDays:
         raise ValueError(f"no daily statistic {statistic!r}")
     sums = np.bincount(index, weights=hourly, minlength=days.size)
     full = counts >= MIN_HOURS
-    return PointDays(
+    from_hours = PointDays(
         sampling_point=sampling_point,
         days=days[full],
         means=sums[full] / counts[full],
         hours=counts[full].astype(np.int64),
+    )
+    reported = valid & (aggregation == DAILY)
+    named = (starts[reported] + FILE_HOURS_AHEAD_OF_UTC).astype("datetime64[D]")
+    return _with_reported_days(from_hours, named, values[reported])
+
+
+def _with_reported_days(
+    from_hours: PointDays, days: NDArray[np.datetime64], values: NDArray[np.float64]
+) -> PointDays:
+    """`from_hours`, and the days it lacks from values reported for the whole day."""
+    named, first = np.unique(days, return_index=True)
+    missing = ~np.isin(named, from_hours.days)
+    every_day = np.concatenate([from_hours.days, named[missing]])
+    order = np.argsort(every_day)
+    return PointDays(
+        sampling_point=from_hours.sampling_point,
+        days=every_day[order],
+        means=np.concatenate([from_hours.means, values[first][missing]])[order],
+        hours=np.concatenate([from_hours.hours, np.zeros(missing.sum(), np.int64)])[order],
     )
 
 
