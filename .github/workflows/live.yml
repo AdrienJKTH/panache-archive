@@ -11,7 +11,8 @@ name: Live maps
 # It starts every hour, as GitHub's cron is late by hours or skips starts at times (seen on
 # 2026-11-08) and a run may come out late; a start with nothing new takes under a minute. A published file never changes: the stream's year
 # grows as a new file named after its last day, and a first fill of the year takes a few passes of
-# three months each. Files that `live.json` no longer names are deleted after KEEP_DAYS.
+# three months each. Files that neither `live.json` nor the pointer it replaced name are
+# deleted after KEEP_DAYS.
 
 on:
   schedule:
@@ -39,6 +40,11 @@ jobs:
     name: Build and publish what changed
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    defaults:
+      run:
+        # With `shell: bash` named, a step runs with `-eo pipefail`: a failing command before
+        # `| tee` fails the step (on 2026-11-08 a failed pass was taken for a success).
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -71,6 +77,9 @@ jobs:
           gh release view "$RELEASE" > /dev/null 2>&1 \
             || gh release create "$RELEASE" --title "Panache's map of today and the next days" \
               --notes-file docs/maps-live-release.md --latest=false
+          # The pointer being replaced: its files are kept a pass longer (the next step).
+          gh release download "$RELEASE" --pattern live.json --output previous.json 2> /dev/null \
+            || echo '{}' > previous.json
           # The files first: `live.json` names them.
           if compgen -G "dist/*.days" > /dev/null; then
             gh release upload "$RELEASE" dist/*.days --clobber
@@ -80,7 +89,10 @@ jobs:
         if: steps.build.outputs.changed == 'true'
         run: |
           oldest=$(date -u -d "$KEEP_DAYS days ago" +%F)
-          named=$(jq -r '(.layers | .[]), (.stream[] | .asset)' dist/live.json)
+          # What the new pointer names, and what the one it replaced named: a reader that took the
+          # previous pointer a moment ago, or from the mirror a pass behind, still finds its files.
+          named=$(jq -r '(.layers // {} | .[]), (.stream // [] | .[] | .asset)' \
+            dist/live.json previous.json)
           for asset in $(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE" \
               --jq '.assets[].name | select(endswith(".days"))'); do
             if grep -qxF "$asset" <<< "$named"; then continue; fi
