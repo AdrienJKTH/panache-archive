@@ -1,7 +1,9 @@
 import hashlib
 import io
 import json
+import urllib.error
 from collections.abc import Mapping, Sequence
+from email.message import Message
 from pathlib import Path
 from typing import cast
 
@@ -98,6 +100,17 @@ def test_a_digest_decides_when_both_sides_have_one(
     assert todo.card  # no card on the mirror yet
 
 
+def test_the_parts_of_a_year_being_built_are_never_mirrored() -> None:
+    part = Asset("downscaled-pm10-2018-part2.days", 9, "p")
+    year = Asset("downscaled-pm10-2019.days", 9, "y")
+    left_there = Asset("downscaled-ozone-2018-part1.days", 9, "o")
+
+    todo = mirror.plan([part, year], [left_there], CARD, git_blob_id(CARD))
+
+    assert [a.name for a in todo.upload] == ["downscaled-pm10-2019.days"]
+    assert todo.delete == ("downscaled-ozone-2018-part1.days",)
+
+
 def test_a_mirror_in_line_has_nothing_to_do() -> None:
     assert mirror.plan(RELEASE, RELEASE, CARD, git_blob_id(CARD)).empty
 
@@ -163,6 +176,52 @@ def test_an_asset_is_streamed_from_its_url(monkeypatch: pytest.MonkeyPatch, tmp_
 
     assert (tmp_path / "a.cells").read_bytes() == b"the bytes"
     assert asked == ["https://gh/a.cells"]
+
+
+def test_a_download_github_fails_is_tried_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    answers: list[Exception | bytes] = [
+        urllib.error.HTTPError("https://gh/a.cells", 504, "Gateway Time-out", Message(), None),
+        TimeoutError("read timed out"),
+        b"the bytes",
+    ]
+    waits: list[float] = []
+
+    def urlopen(url: str, timeout: float) -> io.BytesIO:
+        assert url == "https://gh/a.cells"
+        assert timeout > 0
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return io.BytesIO(answer)
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    asset = Asset("a.cells", 9, url="https://gh/a.cells")
+    mirror.download_asset(asset, tmp_path / "a.cells", sleep=waits.append)
+
+    assert (tmp_path / "a.cells").read_bytes() == b"the bytes"
+    assert waits == [2.0, 4.0]
+
+
+@pytest.mark.parametrize("code", [404, 503])
+def test_a_download_refused_or_failing_to_the_end_is_raised(
+    code: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def urlopen(url: str, timeout: float) -> io.BytesIO:
+        assert timeout > 0
+        raise urllib.error.HTTPError(url, code, "no", Message(), None)
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    waits: list[float] = []
+
+    with pytest.raises(urllib.error.HTTPError):
+        mirror.download_asset(
+            Asset("a.cells", 9, url="https://gh/a.cells"), tmp_path / "a.cells", sleep=waits.append
+        )
+
+    assert len(waits) == (0 if code == 404 else 3)
 
 
 def _file(**entry: object) -> RepoFile:
