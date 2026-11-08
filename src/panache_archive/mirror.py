@@ -5,7 +5,10 @@ mirror on Hugging Face when GitHub fails: the public dataset `adrien4916/air_qua
 folder `cams-europe-v1`. The `Mirror` workflow keeps the folder equal to the release:
 - an asset missing from the mirror, or of another size or SHA-256, is uploaded again;
 - a file the release no longer holds (an interim year replaced by its validated twin) is deleted;
-- the dataset card (`README.md`) follows `docs/hugging-face-card.md`.
+- the dataset card (`README.md`) follows `docs/hugging-face-card.md`;
+- the parts of a year being built (`downscaled-<pollutant>-<year>-part<k>.days`, Panache's D79)
+  stay out: they live an hour or three, until the year they make is published.
+A download that GitHub answers with a server error, or that is cut, is tried again.
 Assets go in batches of at most `BATCH_BYTES`, one commit each, so that a runner's disk holds one
 batch at a time.
 """
@@ -13,7 +16,10 @@ batch at a time.
 import hashlib
 import json
 import logging
+import re
 import shutil
+import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -31,6 +37,8 @@ FOLDER: Final = "cams-europe-v1"
 CARD: Final = "README.md"
 BATCH_BYTES: Final = 4_000_000_000
 """What a batch downloads at most: ~10 assets, well within a runner's disk."""
+TRANSIENT: Final = re.compile(r"-part\d+\.days$")
+"""The assets a build publishes for a while, never mirrored."""
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +101,9 @@ def release_assets(listing: Iterable[Mapping[str, Any]]) -> list[Asset]:
 def plan(
     release: Sequence[Asset], mirrored: Sequence[Asset], card: bytes, card_blob: str | None
 ) -> Plan:
-    """What to upload and delete so that the mirror holds exactly the release, and its card."""
+    """What to upload and delete so that the mirror holds exactly the release, and its card;
+    the release's `TRANSIENT` assets left out."""
+    release = [a for a in release if not TRANSIENT.search(a.name)]
     there = {a.name: a for a in mirrored}
     upload = tuple(
         asset
@@ -157,13 +167,30 @@ def git_blob_id(content: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(content) + content).hexdigest()
 
 
-def download_asset(asset: Asset, target: Path) -> None:
-    """Stream a release asset to `target` (GitHub redirects to its storage)."""
-    with (
-        urllib.request.urlopen(asset.url, timeout=web.TIMEOUT_SECONDS) as answer,
-        target.open("wb") as out,
-    ):
-        shutil.copyfileobj(answer, out, length=1 << 20)
+def download_asset(
+    asset: Asset, target: Path, *, sleep: Callable[[float], None] = time.sleep
+) -> None:
+    """Stream a release asset to `target` (GitHub redirects to its storage). A server error
+    (5xx), a lost connection or a timeout is tried again, from the start, as `web.read` does."""
+    for attempt in range(1, web.ATTEMPTS + 1):
+        try:
+            with (
+                urllib.request.urlopen(asset.url, timeout=web.TIMEOUT_SECONDS) as answer,
+                target.open("wb") as out,
+            ):
+                shutil.copyfileobj(answer, out, length=1 << 20)
+            return
+        except urllib.error.HTTPError as error:
+            if error.code < 500 or attempt == web.ATTEMPTS:
+                raise
+            reason = f"HTTP {error.code}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            if attempt == web.ATTEMPTS:
+                raise
+            reason = str(error)
+        wait = web.FIRST_WAIT_SECONDS * 2 ** (attempt - 1)
+        logger.warning("%s: %s, again in %.0f s", asset.name, reason, wait)
+        sleep(wait)
 
 
 class HubApi:
