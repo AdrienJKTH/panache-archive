@@ -1,0 +1,76 @@
+name: Stream experiment
+
+# Panache's D81: what is a day after the archive worth? The ~100 m model trained on the reanalysis
+# until 2023, then fed the reanalysis and CAMS's daily stream (Open-Meteo's bucket) over 2024 and
+# 2025, at the background and traffic stations of the 18 countries of `downscaling-europe-v1`.
+# The stream is read from AWS Open Data, ~22 GB over the two years, a block at a time.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      pollutant:
+        description: "The pollutant"
+        default: nitrogen_dioxide
+      every:
+        description: "One day in this many"
+        default: "2"
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: Stream experiment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Fetch the stations, the fixed layers and the fine tiles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLLUTANT: ${{ inputs.pollutant }}
+        run: |
+          gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs \
+            --pattern "stations-*-$POLLUTANT.parquet" --pattern "static-europe-1km.npz"
+          for release in fine-europe-west-v1 fine-europe-east-v1; do
+            gh release download "$release" --repo "$GITHUB_REPOSITORY" --dir fine \
+              --pattern "fine-*.npz"
+          done
+          echo "$(ls fine | wc -l) tiles"
+          df -h / | tail -1
+      - name: Experiment
+        env:
+          POLLUTANT: ${{ inputs.pollutant }}
+          EVERY: ${{ inputs.every }}
+        run: |
+          set -o pipefail
+          mkdir -p out
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -v -o out/time.txt \
+            /tmp/panache/bin/panache-downscaling-experiment --europe inputs --fine fine --stream \
+            --pollutants "$POLLUTANT" --every "$EVERY" --out "out/stream-$POLLUTANT.json" \
+            | tee "out/stream-$POLLUTANT.md"
+          {
+            cat "out/stream-$POLLUTANT.md"
+            grep -E "Elapsed|Maximum resident" out/time.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: stream-experiment
+          path: out/

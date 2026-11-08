@@ -217,6 +217,12 @@ Before towns beyond France, the [`Fine experiment, Europe`](.github/workflows/fi
 gh workflow run fine-experiment-europe.yml -f panache=main
 ```
 
+Before towns of 2026 (Panache's D81), the [`Stream experiment`](.github/workflows/stream-experiment.yml) workflow trains that model on the reanalysis until 2023, then feeds it the reanalysis and CAMS's daily stream over 2024 and 2025 at the same stations: the stream, read from Open-Meteo's bucket on AWS Open Data (~22 GB over the two years, a block at a time), is what a map after the archive would be fed.
+
+```bash
+gh workflow run stream-experiment.yml -f panache=main
+```
+
 ## The compute Space
 
 Panache's button "compute in high definition" calls a free Hugging Face Space, [`adrien4916/panache-compute`](https://huggingface.co/spaces/adrien4916/panache-compute), which computes a view at ~100 m on request (Panache's D74). A public Space's image can be pulled by anyone, and Panache's repository is private, so the [`Compute Space`](.github/workflows/space.yml) workflow (`panache-archive space`) deploys only what `panache.compute_app` and `panache.fetch_archive` import, worked out from their imports, with the Dockerfile and card of [`space/`](space/). The Space builds itself and its data from this repository's public releases.
