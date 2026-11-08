@@ -8,14 +8,14 @@ name: Live maps
 # deploy key PANACHE_DEPLOY_KEY, since Panache's repository is private), and writes only what
 # changed since the last publication.
 #
-# It starts several times a day, as GitHub's cron is late at times and a run may come out late; a
-# start with nothing new takes under a minute. A published file never changes: the stream's year
+# It starts every hour, as GitHub's cron is late by hours or skips starts at times (seen on
+# 2026-11-08) and a run may come out late; a start with nothing new takes under a minute. A published file never changes: the stream's year
 # grows as a new file named after its last day, and a first fill of the year takes a few passes of
 # three months each. Files that `live.json` no longer names are deleted after KEEP_DAYS.
 
 on:
   schedule:
-    - cron: "5 12,14,17,21 * * *"
+    - cron: "5 * * * *"
   workflow_dispatch:
     inputs:
       panache:
