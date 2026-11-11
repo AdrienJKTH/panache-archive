@@ -153,7 +153,8 @@ def shuffled(values: np.ndarray) -> bytes:
 
 
 def compressed(data: bytes, level: int = 3) -> int:
-    return len(pa.compress(data, codec="zstd", compression_level=level, asbytes=True))
+    codec = pa.Codec("zstd", compression_level=level)
+    return len(codec.compress(data, asbytes=True))
 
 
 ENCODINGS: dict[str, Callable[[np.ndarray], int]] = {
