@@ -52,8 +52,13 @@ def _describe(name: str, content: bytes, out: list[str], depth: int) -> None:
             for member in members:
                 out.append(f"{pad}  {member.filename} {member.file_size}")
             for member in members:
+                if "__MACOSX" in member.filename:
+                    continue
                 out.append(f"{pad}>>> {member.filename}")
-                _describe(member.filename, archive.read(member), out, depth + 1)
+                try:
+                    _describe(member.filename, archive.read(member), out, depth + 1)
+                except Exception as error:
+                    out.append(f"{pad}  unreadable: {error!r}")
     elif lower.endswith(TEXT):
         text = content.decode("utf-8", errors="replace")
         lines = text.splitlines()
