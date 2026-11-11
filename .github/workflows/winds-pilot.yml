@@ -1,0 +1,53 @@
+name: Winds pilot
+
+# Panache's feature 2 (trajectories): measures a wind archive for back-trajectories, builds and
+# publishes nothing. Reads a few days of ARCO-ERA5 (u, v, omega on 10 levels from 1000 to 500 hPa,
+# and the surface pressure, over 15-75° N, 60° W-50° E every 3 hours), then reports how ARCO
+# stores them, what reading an hour costs, the compressed size of each candidate layout per year,
+# and what one 96-hour back-trajectory (Panache's integrator, 81 members) would read in each.
+# Started by labelling a pull request `pilot-winds`.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    name: Winds pilot
+    if: github.event.label.name == 'pilot-winds'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: main
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install
+        run: |
+          uv venv /tmp/pilot --python 3.12
+          uv pip install --python /tmp/pilot/bin/python ./panache/backend \
+            "xarray>=2025.6" "zarr>=3.0.8" "gcsfs>=2025.5"
+      - name: Pilot
+        run: |
+          set -o pipefail
+          mkdir -p out
+          /usr/bin/time -v -o out/time.txt /tmp/pilot/bin/python -I pilots/winds.py --out out
+          {
+            cat out/winds-pilot.md
+            echo
+            grep -E "Elapsed|Maximum resident" out/time.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: winds-pilot
+          path: out
