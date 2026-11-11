@@ -1,0 +1,132 @@
+name: Winds
+run-name: >-
+  ${{ github.event_name == 'pull_request' && github.event.pull_request.title || 'Winds' }}
+
+# Builds the archive of ERA5's winds for Panache's back-trajectories (Panache's D83): u, v and
+# omega on 10 levels from 500 to 1000 hPa and the surface pressure, every 3 hours over 15-84.5° N,
+# 70° W-89.5° E at 0.5°, read from ARCO-ERA5 (Google's public Zarr, anonymous) and published one
+# month at a time to the release winds-europe-v1 (~320 MB a month). One job a year, each month
+# published as soon as it is built, so a job started again builds only what is missing.
+# Labelling a pull request `pilot-winds-build` builds the first two days of February 2021 as the
+# run's artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "`all` (2013 to now), a year, or a span such as 2013-2025"
+        default: all
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: winds-${{ github.event_name == 'pull_request' && github.ref || 'build' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: winds-europe-v1
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "ERA5 winds over Europe, for trajectories"
+          --notes-file docs/winds-europe-release.md
+      - name: List the assets already built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+      - name: Plan
+        id: plan
+        env:
+          YEARS: ${{ inputs.years }}
+        run: |
+          matrix=$(uv run panache-archive winds-plan --years "$YEARS" --built built.txt)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) years to build: \(map(.year) | join(", "))"' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Winds ${{ matrix.year }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build and publish each month
+        env:
+          GH_TOKEN: ${{ github.token }}
+          YEAR: ${{ matrix.year }}
+          MONTHS: ${{ matrix.months }}
+        run: |
+          set -o pipefail
+          for month in $MONTHS; do
+            start=$SECONDS
+            path=$(uv run panache-archive winds-build --year "$YEAR" --month "$month" --out dist \
+              | tail -1)
+            gh release upload "$RELEASE" "$path" --clobber
+            echo "| $(basename "$path") | $(du -m "$path" | cut -f1) MB |" \
+              "$((SECONDS - start)) s |" >> "$GITHUB_STEP_SUMMARY"
+            rm "$path"
+          done
+
+  pilot:
+    name: Pilot, 1-2 February 2021
+    if: github.event_name == 'pull_request' && github.event.label.name == 'pilot-winds-build'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build two days
+        run: |
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -f "%e %M" -o took.txt uv run panache-archive winds-build \
+            --year 2021 --month 2 --days 2 --out dist
+          read -r seconds kilobytes < took.txt
+          echo "| winds-2021-02.winds, 2 days | $(du -k dist/*.winds | cut -f1) kB |" \
+            "${seconds} s | $((kilobytes / 1024)) MB |" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Keep the asset
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pilot-winds
+          path: dist/
+          if-no-files-found: ignore
