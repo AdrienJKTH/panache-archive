@@ -1,7 +1,6 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
 `era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static`, `fine`,
-`fine-plan` and `space`, as the
-workflows run them."""
+`fine-plan`, `space`, `winds-plan` and `winds-build`, as the workflows run them."""
 
 import argparse
 import asyncio
@@ -29,6 +28,7 @@ from panache_archive import (
     static,
     stations,
     supervise,
+    winds,
 )
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
 from panache_archive.domain import Domain
@@ -243,6 +243,19 @@ def _months(text: str) -> tuple[int, ...]:
     return ALL_MONTHS if text.strip() == "all" else plan.parse_span(text)
 
 
+def _winds_plan(args: argparse.Namespace) -> int:
+    built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
+    years = plan.parse_years(args.years)
+    wanted = sorted(years or range(winds.FIRST_YEAR, date.today().year + 1))
+    print(json.dumps(winds.plan(wanted, built)))
+    return 0
+
+
+def _winds_build(args: argparse.Namespace) -> int:
+    print(winds.build(args.year, args.month, Path(args.out), days=args.days))
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="panache-archive",
@@ -315,6 +328,22 @@ def _parser() -> argparse.ArgumentParser:
     merra2_building.add_argument("--months", default="all", help="`all`, a month, or a span: 1-9")
     merra2_building.add_argument("--out", default="dist", help="where the asset is written")
     merra2_building.set_defaults(run=_merra2_build)
+
+    winds_planning = commands.add_parser(
+        "winds-plan", help="print the years whose ERA5 winds are out but not built"
+    )
+    winds_planning.add_argument("--years", default="all", help="`all`, a year, or a span")
+    winds_planning.add_argument("--built", help="a file listing the assets already built")
+    winds_planning.set_defaults(run=_winds_plan)
+
+    winds_building = commands.add_parser(
+        "winds-build", help="build one month of ERA5 winds from ARCO-ERA5"
+    )
+    winds_building.add_argument("--year", required=True, type=int)
+    winds_building.add_argument("--month", required=True, type=int)
+    winds_building.add_argument("--days", type=int, help="only the month's first days (pilots)")
+    winds_building.add_argument("--out", default="dist", help="where the asset is written")
+    winds_building.set_defaults(run=_winds_build)
 
     mirroring = commands.add_parser(
         "mirror", help="mirror the whole domain's release on Hugging Face"

@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from helpers import REGULAR_LATS, REGULAR_LONS, FakeAds, FakeOpenMeteo, on_regular_grid
-from panache_archive import cells, cli, era5, merra2, static
+from panache_archive import cells, cli, era5, merra2, static, winds
 from panache_archive.build import Job, to_table
 from panache_archive.check import EUROPE_PLACES, PLACES
 from panache_archive.variables import Reanalysis, Variable
@@ -387,3 +387,29 @@ def test_static_reads_gdals_four_cuts(
     )
     assert asked[1][-1] is static.REGIONS["europe"]
     assert capsys.readouterr().out.split()[0] == str(Path("dist") / "static.npz")
+
+
+def test_winds_commands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def fake_plan(years: list[int], built: set[str]) -> list[dict[str, object]]:
+        calls.append(("plan", tuple(years), frozenset(built)))
+        return [{"year": 2021, "months": "2 3"}]
+
+    def fake_build(year: int, month: int, out: Path, *, days: int | None) -> Path:
+        calls.append(("build", year, month, out, days))
+        return out / "winds-2021-02.winds"
+
+    monkeypatch.setattr(winds, "plan", fake_plan)
+    monkeypatch.setattr(winds, "build", fake_build)
+    built = tmp_path / "built.txt"
+    built.write_text("winds-2021-01.winds", encoding="utf-8")
+    assert cli.main(["winds-plan", "--years", "2021", "--built", str(built)]) == 0
+    assert json.loads(capsys.readouterr().out) == [{"year": 2021, "months": "2 3"}]
+    assert cli.main(["winds-build", "--year", "2021", "--month", "2", "--days", "3"]) == 0
+    assert calls == [
+        ("plan", (2021,), frozenset({"winds-2021-01.winds"})),
+        ("build", 2021, 2, Path("dist"), 3),
+    ]
