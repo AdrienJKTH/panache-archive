@@ -1,3 +1,4 @@
+import http.client
 import io
 import urllib.error
 from email.message import Message
@@ -27,7 +28,7 @@ def http_error(code: int) -> urllib.error.HTTPError:
 def test_server_errors_and_lost_connections_are_tried_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    errors = (http_error(502), urllib.error.URLError("reset"), TimeoutError("slow"))
+    errors = (http_error(502), urllib.error.URLError("reset"), http.client.IncompleteRead(b"x"))
     monkeypatch.setattr("urllib.request.urlopen", failing(*errors))
     waits: list[float] = []
 
