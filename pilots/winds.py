@@ -33,7 +33,9 @@ STORE = "gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 WINDS = {"u": "u_component_of_wind", "v": "v_component_of_wind", "omega": "vertical_velocity"}
 SURFACE = "surface_pressure"
 LEVELS = (500, 600, 700, 800, 850, 900, 925, 950, 975, 1000)
-SOUTH, NORTH, WEST, EAST = 15.0, 75.0, -60.0, 50.0
+SOUTH, NORTH, WEST, EAST = 15.0, 85.0, -70.0, 90.0
+FIRST_BOX = (15.0, 75.0, -60.0, 50.0)
+"""The first pilot's box: south, north, west, east."""
 STEP_HOURS = 3
 STEPS_PER_YEAR = 365.25 * 24 / STEP_HOURS
 SCALE = {"u": 0.01, "v": 0.01, "omega": 0.002, "sp": 2.0}
@@ -197,7 +199,18 @@ def main() -> None:
         try:
             result["chunks"][variable] = chunk_report(fs, variable, first)
         except Exception as error:
-            result["chunks"][variable] = {"error": repr(error)}
+            listing = {}
+            for path in (STORE, f"{STORE}/{variable}"):
+                try:
+                    listing[path] = [entry["name"] for entry in fs.ls(path, detail=True)[:12]]
+                except Exception as inner:
+                    listing[path] = [repr(inner)]
+            encoding = {key: str(value) for key, value in ds[variable].encoding.items()}
+            result["chunks"][variable] = {
+                "error": repr(error),
+                "listing": listing,
+                "encoding": encoding,
+            }
         lines.append(f"- `{variable}`: {result['chunks'][variable]}")
 
     lat_index, lon_index, lats, lons = box_indices(ds)
@@ -290,6 +303,26 @@ def main() -> None:
         float(np.mean(list(tile_sizes.values()))) * len(tiles(grid)),
         365.25,
     )
+    coarse = [stack.copy() for stack in stacks[2]]
+    for stack in coarse:
+        winds = stack[: 2 * len(LEVELS)].astype(np.int32)
+        stack[: 2 * len(LEVELS)] = np.round(winds / 10).astype(np.int16)
+    coarse_days = [np.stack(coarse[d : d + per_day]) for d in range(0, len(coarse), per_day)]
+    record(
+        f"0.5°, u and v to 0.1 m/s, delta along lon, byte split, zstd 3, a frame per day and "
+        f"{TILE // 2}° tile",
+        float(
+            np.mean(
+                [
+                    best(day[:, :, tile[0] : tile[0] + TILE, tile[1] : tile[1] + TILE])
+                    for day in coarse_days
+                    for tile in tiles(grid)
+                ]
+            )
+        )
+        * len(tiles(grid)),
+        365.25,
+    )
     result["sizes_per_year"] = sizes
 
     # The field at 0.5°, from the int16 values, and real back-trajectories in it.
@@ -310,9 +343,9 @@ def main() -> None:
     lines += ["", f"## 96-hour back-trajectories from {moment:%Y-%m-%d %H} UTC, 500 m, 81 members"]
     lines += [
         "",
-        "| Place | Centre after 96 h | Outside | Integration | Frames per step | Per day |"
-        " Tiles per day |",
-        "|---|---|---|---|---|---|---|",
+        "| Place | Centre after 96 h | Outside | Left the first box | Reach (S, N, W, E) |"
+        " Integration | Frames per step | Per day | Tiles per day |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     result["trajectories"] = {}
     for place, (lat, lon) in PLACES.items():
@@ -337,8 +370,20 @@ def main() -> None:
                         tiles_read.add((s // per_day, (r_ // TILE * TILE, c_ // TILE * TILE)))
         tile_bytes = sum(tile_sizes.get(key, 0) for key in tiles_read)
         centre = (float(paths.lat[0, -1]), float(paths.lon[0, -1]))
+        south, north, west, east = FIRST_BOX
+        left_first_box = (
+            (paths.lat < south) | (paths.lat > north) | (paths.lon < west) | (paths.lon > east)
+        ).any(axis=1)
+        reach = [
+            float(np.nanmin(paths.lat)),
+            float(np.nanmax(paths.lat)),
+            float(np.nanmin(paths.lon)),
+            float(np.nanmax(paths.lon)),
+        ]
         entry = {
             "centre_end": centre,
+            "reach_south_north_west_east": reach,
+            "left_first_box_share": float(left_first_box.mean()),
             "outside_share": float(paths.outside[:, -1].mean()),
             "grounded_share": float(paths.grounded.mean()),
             "integration_seconds": seconds,
@@ -352,7 +397,8 @@ def main() -> None:
         result["trajectories"][place] = entry
         lines.append(
             f"| {place} | {centre[0]:.1f}° N {centre[1]:.1f}° E | "
-            f"{entry['outside_share']:.0%} | {seconds:.2f} s | "
+            f"{entry['outside_share']:.0%} | {entry['left_first_box_share']:.0%} | "
+            f"{', '.join(f'{value:.0f}' for value in reach)} | {seconds:.2f} s | "
             f"{len(steps_read)}, {entry['step_bytes'] / 1e6:.1f} MB | "
             f"{len(days_read)}, {entry['day_bytes'] / 1e6:.1f} MB | "
             f"{len(tiles_read)}, {tile_bytes / 1e6:.1f} MB |"
