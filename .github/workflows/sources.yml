@@ -2,7 +2,7 @@ name: Source targets
 
 # Builds the measured targets of Panache's feature 4 in its public version (wood smoke or
 # traffic, Panache's D87) into the release sources-v1: the organic aerosol factors of Chen et al.
-# 2022 at 22 European sites and RI-URBANS's black carbon by source at 50 urban stations, both
+# 2022 at 22 European sites and RI-URBANS's black carbon, by source where it is split, both
 # CC BY 4.0 on Zenodo, as daily UTC means (`panache-archive targets`). Labelling a pull request
 # `pilot-sources` surveys both records' files and builds the assets as the run's artifacts,
 # without touching the release.
@@ -45,7 +45,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$RELEASE" > /dev/null 2>&1             || gh release create "$RELEASE" --title "Measured sources of carbonaceous aerosol"               --notes-file docs/sources-release.md
+          gh release view "$RELEASE" > /dev/null 2>&1 \
+            || gh release create "$RELEASE" --title "Measured sources of carbonaceous aerosol" \
+              --notes-file docs/sources-release.md
           gh release upload "$RELEASE" dist/*.parquet --clobber
       - name: Keep as the pilot's artifact
         if: env.PUBLISH != 'true'
