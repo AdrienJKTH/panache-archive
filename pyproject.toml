@@ -16,6 +16,7 @@ dependencies = [
     "numcodecs>=0.16",
     "numpy>=2.5.4",
     "omfiles>=1.2.0",
+    "openpyxl>=3.1.5",
     "pyarrow>=26.0.0",
     "tifffile>=2026.10.15",
 ]
@@ -63,10 +64,12 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 
-# cdsapi, fsspec and numcodecs ship no type information: their few calls (`ads.download`,
-# `era5._Http`, `winds.Store`'s codec) are typed Any.
+# cdsapi, fsspec, numcodecs and openpyxl ship no type information: their few calls (`ads.download`,
+# `era5._Http`, `winds.Store`'s codec, `targets`' workbooks) are typed Any.
 [[tool.mypy.overrides]]
-module = ["cdsapi", "cdsapi.*", "fsspec", "fsspec.*", "numcodecs", "numcodecs.*"]
+module = [
+    "cdsapi", "cdsapi.*", "fsspec", "fsspec.*", "numcodecs", "numcodecs.*", "openpyxl", "openpyxl.*"
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

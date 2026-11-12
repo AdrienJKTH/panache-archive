@@ -3,10 +3,12 @@ name: Source targets
 # Builds the measured targets of Panache's feature 4 in its public version (wood smoke or
 # traffic, Panache's D87) into the release sources-v1: the organic aerosol factors of Chen et al.
 # 2022 at 22 European sites and RI-URBANS's black carbon by source at 50 urban stations, both
-# CC BY 4.0 on Zenodo. Labelling a pull request `pilot-sources` surveys both records' files as
-# the run's artifact, without touching the release.
+# CC BY 4.0 on Zenodo, as daily UTC means (`panache-archive targets`). Labelling a pull request
+# `pilot-sources` surveys both records' files and builds the assets as the run's artifacts,
+# without touching the release.
 
 on:
+  workflow_dispatch:
   pull_request:
     types: [labeled]
 
@@ -17,7 +19,42 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  RELEASE: sources-v1
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' }}
+
 jobs:
+  build:
+    name: Build
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'pilot-sources'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build
+        run: uv run panache-archive targets --out dist | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE" > /dev/null 2>&1             || gh release create "$RELEASE" --title "Measured sources of carbonaceous aerosol"               --notes-file docs/sources-release.md
+          gh release upload "$RELEASE" dist/*.parquet --clobber
+      - name: Keep as the pilot's artifact
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sources
+          path: dist/
+          retention-days: 7
+
   survey:
     name: Survey
     if: github.event.label.name == 'pilot-sources'
