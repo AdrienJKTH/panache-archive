@@ -1,6 +1,7 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
 `era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static`, `fine`,
-`fine-plan`, `space`, `winds-plan` and `winds-build`, as the workflows run them."""
+`fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build` and
+`surface-pilot`, as the workflows run them."""
 
 import argparse
 import asyncio
@@ -28,6 +29,7 @@ from panache_archive import (
     static,
     stations,
     supervise,
+    surface,
     winds,
 )
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
@@ -256,6 +258,30 @@ def _winds_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _surface_plan(args: argparse.Namespace) -> int:
+    built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
+    years = plan.parse_years(args.years)
+    wanted = sorted(years or range(surface.FIRST_YEAR, date.today().year + 1))
+    print(json.dumps(surface.plan(wanted, built)))
+    return 0
+
+
+def _surface_build(args: argparse.Namespace) -> int:
+    print(surface.build(args.year, args.month, Path(args.out), days=args.days))
+    return 0
+
+
+def _surface_pilot(args: argparse.Namespace) -> int:
+    print("| Field | Unit kept | Min | Max | GB a year |")
+    print("|---|---|---|---|---|")
+    for row in surface.measure(args.year, args.month, args.days):
+        print(
+            f"| {row['field']} | {row['scale']:g} | {row['min']:.4g} | {row['max']:.4g} "
+            f"| {row['gb_per_year']:.3f} |"
+        )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="panache-archive",
@@ -344,6 +370,24 @@ def _parser() -> argparse.ArgumentParser:
     winds_building.add_argument("--days", type=int, help="only the month's first days (pilots)")
     winds_building.add_argument("--out", default="dist", help="where the asset is written")
     winds_building.set_defaults(run=_winds_build)
+
+    surface_planning = commands.add_parser(
+        "surface-plan", help="print the years whose ERA5 boundary layer is out but not built"
+    )
+    surface_planning.add_argument("--years", default="all", help="`all`, a year, or a span")
+    surface_planning.add_argument("--built", help="a file listing the assets already built")
+    surface_planning.set_defaults(run=_surface_plan)
+
+    for name, run, text in (
+        ("surface-build", _surface_build, "build one month of ERA5's boundary layer"),
+        ("surface-pilot", _surface_pilot, "measure what each candidate field would weigh"),
+    ):
+        surface_command = commands.add_parser(name, help=text)
+        surface_command.add_argument("--year", required=True, type=int)
+        surface_command.add_argument("--month", required=True, type=int)
+        surface_command.add_argument("--days", type=int, help="only the month's first days")
+        surface_command.add_argument("--out", default="dist", help="where the asset is written")
+        surface_command.set_defaults(run=run)
 
     mirroring = commands.add_parser(
         "mirror", help="mirror the whole domain's release on Hugging Face"
