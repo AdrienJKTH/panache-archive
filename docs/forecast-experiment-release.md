@@ -1,0 +1,7 @@
+The inputs and results of Panache's forecast experiment (D89, Phase 6): can PM2.5 be forecast from J+1 to J+7 at a place, by methods judged on countries they never saw?
+
+- `forecast-experiment.parquet`: one row per place and day, 2013-2025, at 21 cities in 8 countries (FR, DE, IT, ES, PL, GB, CZ, GR). The daily mean PM2.5 of the CAMS European reanalysis (the year's nearest cell, from `cams-europe-v1`); ERA5's daily weather at the nearest 0.25° point (from `era5-europe-v1`); ECMWF IFS's archived runs (`ecmwf_ifs025`) at leads 0 to 7, as daily weather, from 20 February 2024 (Open-Meteo's Previous Runs API). Built by `panache-forecast-experiment build`.
+- `foundation-forecasts.parquet`: Chronos-2's and TabPFN-TS's forecasts, 20 quantiles of ln(PM2.5 + 0.1) per place, target day and lead (`experiments/forecast_foundation.py`).
+- `forecast-scores.json` and `.md`: every method's scores per lead (`panache-forecast-experiment run`).
+
+Attribution: Copernicus Atmosphere Monitoring Service (CAMS) European air quality reanalyses; Hersbach et al. (2023), ERA5 hourly data, Copernicus Climate Change Service; ECMWF IFS forecasts through Open-Meteo (https://open-meteo.com, CC BY 4.0). Neither the European Commission nor ECMWF is responsible for any use of this information. Models: Chronos-2 (Amazon, Apache 2.0); TabPFN-TS (Prior Labs, Apache 2.0) on the TabPFN-2 regressor's weights (Prior Labs License, built with TabPFN).
