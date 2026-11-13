@@ -195,7 +195,14 @@ def test_to_table_of_nothing() -> None:
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("51.52253, -0.154611", (51.52253, -0.154611)), ("N/A", None), ("95, 10", None)],
+    [
+        ("51.52253, -0.154611", (51.52253, -0.154611)),
+        ("37°58'23.3\"N, 23°43'08.9\"E", (37.973139, 23.719139)),
+        ("40.456 N, 3.726 W", (40.456, -3.726)),
+        ("N/A", None),
+        ("95, 10", None),
+        ("37, 58", None),
+    ],
 )
 def test_coordinates(text: str, expected: tuple[float, float] | None) -> None:
     assert targets._coordinates(text) == expected
@@ -211,3 +218,21 @@ def test_coordinates(text: str, expected: tuple[float, float] | None) -> None:
 )
 def test_first_word(key: str, place: str) -> None:
     assert targets._first_word(key) == place
+
+
+@pytest.mark.parametrize(
+    ("cell", "expected"),
+    [
+        (datetime(2017, 1, 31, 13), "2017-01-31T13:00:00"),
+        (42736.5, "2017-01-01T12:00:00"),
+        ("2017-01-31 13:00:00", "2017-01-31T13:00:00"),
+        ("31/01/2017 13:00", "2017-01-31T13:00:00"),
+        ("31/01/2017", "2017-01-31T00:00:00"),
+        ("soon", None),
+        (None, None),
+        (True, None),
+    ],
+)
+def test_time(cell: object, expected: str | None) -> None:
+    found = targets._time(cell)
+    assert (None if found is None else str(found)) == expected

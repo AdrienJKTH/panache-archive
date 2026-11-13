@@ -89,6 +89,8 @@ class Site:
     first_day: str
     last_day: str
     source_file: str
+    position_text: str = ""
+    """The position as the record wrote it, when it was read from text."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +132,18 @@ CHEN_INSTRUMENT: Final = "ACSM"
 CHEN_AMS_SITES: Final = frozenset({"bir"})
 """Birkenes' organics come from an AMS at a coarser step (Site_descriptions.docx)."""
 CHEN_TIME: Final = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+DAY_FIRST: Final = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?")
+EXCEL_EPOCH: Final = np.datetime64("1899-12-30T00:00:00", "s")
+"""Day 0 of a workbook's serial dates."""
+COORDINATE: Final = re.compile(
+    # Minutes marked by ' or a prime (U+2032, U+2019, U+00B4), seconds by " or a double prime.
+    r"(?P<degrees>-?\d+(?:\.\d+)?)\s*(?:°|º|deg)?\s*"
+    r"(?:(?P<minutes>\d+(?:\.\d+)?)\s*['\u2032\u2019\u00b4]\s*)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)\s*(?:\"|″|”|''|\u2032\u2032)\s*)?"
+    r"(?P<hemisphere>[NSEWnsew](?![a-z]))?"
+)
+DOMAIN_SOUTH, DOMAIN_NORTH, DOMAIN_WEST, DOMAIN_EAST = 30.0, 72.0, -25.0, 45.0
+"""CAMS Europe's domain: a position outside it is misread."""
 CHEN_FILE: Final = re.compile(r"(?:PMF|External)_data/(?P<site>[a-z]+)(?:_PMF)?\+\+\.txt$")
 
 RI_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
@@ -293,10 +307,13 @@ def ri_urbans_series(archive: bytes) -> tuple[list[Site], list[tuple[str, str, D
             times, columns = _ri_columns(book[RI_DATA_SHEET].iter_rows(values_only=True))
             book.close()
             key = file.removesuffix(".xlsx")
-            position = _coordinates(metadata.get("COORDINATES", ""))
+            written = metadata.get("COORDINATES", "")
+            position = _coordinates(written)
             if position is None:
-                logger.warning("RI-URBANS: no coordinates in %s, left out", file)
+                logger.warning("RI-URBANS: %s's position %r unread, left out", file, written)
                 continue
+            if not times.size:
+                logger.warning("RI-URBANS: no times read in %s", file)
             kept = [(v, daily(times, values)) for v, values in columns.items()]
             kept = [(v, d) for v, d in kept if d.days.size]
             series.extend((key, variable, days) for variable, days in kept)
@@ -315,6 +332,7 @@ def ri_urbans_series(archive: bytes) -> tuple[list[Site], list[tuple[str, str, D
                     first_day=str(all_days.min()) if all_days.size else "",
                     last_day=str(all_days.max()) if all_days.size else "",
                     source_file=file,
+                    position_text=written,
                 )
             )
             logger.info("%s: %s", file, {v: int(d.days.size) for v, d in kept})
@@ -443,19 +461,41 @@ def _ri_columns(
 
 
 def _time(cell: Any) -> np.datetime64 | None:
+    """A workbook's time: a date cell, a serial day number, or text as `2017-01-31 13:00:00` or
+    `31/01/2017 13:00`."""
     if isinstance(cell, datetime):
         return np.datetime64(cell.replace(tzinfo=None), "s")
-    if isinstance(cell, str) and (found := CHEN_TIME.search(cell.replace("T", " "))):
+    if isinstance(cell, int | float) and not isinstance(cell, bool) and cell > 0:
+        return EXCEL_EPOCH + np.timedelta64(round(float(cell) * 86_400), "s")
+    if not isinstance(cell, str):
+        return None
+    if found := CHEN_TIME.search(cell.replace("T", " ")):
         return np.datetime64(found.group(1).replace(" ", "T"), "s")
+    if found := DAY_FIRST.search(cell):
+        day, month, year, hour, minute, second = (int(g or 0) for g in found.groups())
+        return np.datetime64(datetime(year, month, day, hour, minute, second), "s")
     return None
 
 
 def _coordinates(text: str) -> tuple[float, float] | None:
-    numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
-    if len(numbers) < 2:
+    """A workbook's position, as decimal degrees or degrees, minutes and seconds, a hemisphere's
+    letter making south and west negative; `None` unless both fall on CAMS's domain."""
+    found = [m for m in COORDINATE.finditer(text) if m["degrees"]]
+    if len(found) < 2:
         return None
-    lat, lon = float(numbers[0]), float(numbers[1])
-    return (lat, lon) if -90 <= lat <= 90 and -180 <= lon <= 180 else None
+    lat, lon = (_degrees(m) for m in found[:2])
+    if not (DOMAIN_SOUTH <= lat <= DOMAIN_NORTH and DOMAIN_WEST <= lon <= DOMAIN_EAST):
+        return None
+    return round(lat, 6), round(lon, 6)
+
+
+def _degrees(found: re.Match[str]) -> float:
+    degrees = float(found["degrees"])
+    minutes = float(found["minutes"] or 0) / 60
+    seconds = float(found["seconds"] or 0) / 3600
+    value = abs(degrees) + minutes + seconds
+    negative = degrees < 0 or (found["hemisphere"] or "").upper() in {"S", "W"}
+    return -value if negative else value
 
 
 def _first_word(key: str) -> str:
