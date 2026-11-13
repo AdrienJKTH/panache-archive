@@ -1,6 +1,6 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
-`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static`, `fine`,
-`fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build`,
+`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `targets`, `static`,
+`fine`, `fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build`,
 `surface-pilot`, `emissions-plan`, `emissions-build` and `emissions-pilot`, as the workflows
 run them."""
 
@@ -32,6 +32,7 @@ from panache_archive import (
     stations,
     supervise,
     surface,
+    targets,
     winds,
 )
 from panache_archive.build import ALL_MONTHS, Job, build, read_metadata
@@ -200,6 +201,12 @@ def _stations(args: argparse.Namespace) -> int:
     last_year = args.last_year or date.today().year - 1
     pollutant = stations.Pollutant(args.pollutant)
     print(stations.build(args.country, pollutant, Path(args.out), last_year=last_year))
+    return 0
+
+
+def _targets(args: argparse.Namespace) -> int:
+    for path in targets.build(Path(args.out)):
+        print(targets.describe(path), end="\n\n")
     return 0
 
 
@@ -446,6 +453,12 @@ def _parser() -> argparse.ArgumentParser:
     stationing.add_argument("--last-year", type=int, help="the last year kept (default: last year)")
     stationing.add_argument("--out", default="dist", help="where the asset is written")
     stationing.set_defaults(run=_stations)
+
+    targeting = commands.add_parser(
+        "targets", help="build the measured sources of carbonaceous aerosol, from Zenodo"
+    )
+    targeting.add_argument("--out", default="dist", help="where the assets are written")
+    targeting.set_defaults(run=_targets)
 
     fixing = commands.add_parser(
         "static", help="build the 1 km fixed layers from GDAL's cuts (scripts/static-layers.sh)"

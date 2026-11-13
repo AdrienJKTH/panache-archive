@@ -413,3 +413,13 @@ def test_winds_commands(
         ("plan", (2021,), frozenset({"winds-2021-01.winds"})),
         ("build", 2021, 2, Path("dist"), 3),
     ]
+
+
+def test_targets_describes_each_asset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("panache_archive.targets.build", lambda out: [out / "a.parquet"])
+    monkeypatch.setattr("panache_archive.targets.describe", lambda path: f"table of {path.name}")
+
+    assert cli.main(["targets", "--out", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.strip() == "table of a.parquet"

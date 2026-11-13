@@ -10,6 +10,7 @@ Nothing is parsed: the report is read to write the intake that does.
 
 import io
 import json
+import re
 import sys
 import urllib.request
 import zipfile
@@ -20,6 +21,7 @@ RECORDS = {
     "ri-urbans-ebc": "7982201",
 }
 LINES = 12
+DOCX_PARAGRAPHS = 400
 TEXT = (".csv", ".txt", ".dat", ".tsv", ".md", ".json", ".nas", ".xml")
 
 
@@ -59,7 +61,15 @@ def _describe(name: str, content: bytes, out: list[str], depth: int) -> None:
                     _describe(member.filename, archive.read(member), out, depth + 1)
                 except Exception as error:
                     out.append(f"{pad}  unreadable: {error!r}")
+    elif lower.endswith(".docx"):
+        with zipfile.ZipFile(io.BytesIO(content)) as document:
+            xml = document.read("word/document.xml").decode("utf-8")
+        paragraphs = [re.sub(r"<[^>]+>", "", p) for p in re.split(r"</w:p>|</w:tc>", xml)]
+        text = [p.strip() for p in paragraphs if p.strip()]
+        out.append(f"{pad}docx, {len(text)} paragraphs")
+        out.extend(f"{pad}# {line[:400]}" for line in text[:DOCX_PARAGRAPHS])
     elif lower.endswith(TEXT):
+        out.append(f"{pad}first bytes: {content[:120]!r}")
         text = content.decode("utf-8", errors="replace")
         lines = text.splitlines()
         out.append(f"{pad}{len(lines)} lines")
