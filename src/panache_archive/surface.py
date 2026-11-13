@@ -12,8 +12,9 @@ grid and tiles.
   - the friction velocity, m/s;
   - the instantaneous surface sensible heat flux, W/m², ECMWF's sign: **positive downward**, so
     negative when the ground heats the air.
-- **Values**: int16, each field with its own scale and offset, written in the header.
-- **Assets**: one per month, `surface-2021-02.surface`.
+- **Values**: int16, each field with its own scale and offset, written in the header: the
+  height to the metre, the friction velocity to 0.005 m/s, the heat flux to 2 W/m².
+- **Assets**: one per month, `surface-2021-02.surface` (~85 MB), about 1 GB a year.
 
 The format is the `.winds` files', little-endian:
 - **Header**, 128 bytes (`HEADER`): magic, version, year, month, days, steps a day, fields, rows,
@@ -75,9 +76,12 @@ class Field:
 
 FIELDS: Final = (
     Field("boundary_layer_height", 1.0),
-    Field("friction_velocity", 0.002),
-    Field("instantaneous_surface_sensible_heat_flux", 0.5),
+    Field("friction_velocity", 0.005),
+    Field("instantaneous_surface_sensible_heat_flux", 2.0),
 )
+"""Measured by the pilot over 1-4 February 2021 (panache-archive#54): 0.44, 0.30 and 0.26 GB a
+year. The height sets a footprint's dilution, so it keeps its metre; the two others only set how
+fast the layer mixes, which a footprint barely feels (4 % for a factor of four)."""
 CANDIDATES: Final = (
     Field("boundary_layer_height", 1.0),
     Field("boundary_layer_height", 4.0),
