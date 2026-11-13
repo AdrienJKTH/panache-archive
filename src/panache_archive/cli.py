@@ -1,7 +1,8 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
 `era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `static`, `fine`,
-`fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build` and
-`surface-pilot`, as the workflows run them."""
+`fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build`,
+`surface-pilot`, `emissions-plan`, `emissions-build` and `emissions-pilot`, as the workflows
+run them."""
 
 import argparse
 import asyncio
@@ -20,6 +21,7 @@ from huggingface_hub import HfApi
 from panache_archive import (
     ads,
     check,
+    emissions,
     era5,
     fine,
     merra2,
@@ -258,6 +260,24 @@ def _winds_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emissions_plan(args: argparse.Namespace) -> int:
+    built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
+    years = plan.parse_years(args.years)
+    wanted = sorted(years or range(emissions.FIRST_YEAR, emissions.LAST_YEAR + 1))
+    print(json.dumps(emissions.plan(wanted, built)))
+    return 0
+
+
+def _emissions_build(args: argparse.Namespace) -> int:
+    print(emissions.build(args.species, args.year, Path(args.out), Path(args.workdir)))
+    return 0
+
+
+def _emissions_pilot(args: argparse.Namespace) -> int:
+    print("\n".join(emissions.pilot(args.species, args.year, Path(args.workdir))))
+    return 0
+
+
 def _surface_plan(args: argparse.Namespace) -> int:
     built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
     years = plan.parse_years(args.years)
@@ -370,6 +390,24 @@ def _parser() -> argparse.ArgumentParser:
     winds_building.add_argument("--days", type=int, help="only the month's first days (pilots)")
     winds_building.add_argument("--out", default="dist", help="where the asset is written")
     winds_building.set_defaults(run=_winds_build)
+
+    emissions_planning = commands.add_parser(
+        "emissions-plan", help="print the species and years of CAMS-GLOB-ANT not built yet"
+    )
+    emissions_planning.add_argument("--years", default="all", help="`all`, a year, or a span")
+    emissions_planning.add_argument("--built", help="a file listing the assets already built")
+    emissions_planning.set_defaults(run=_emissions_plan)
+
+    for name, run, text in (
+        ("emissions-build", _emissions_build, "build one species' year of CAMS-GLOB-ANT"),
+        ("emissions-pilot", _emissions_pilot, "download a species' year and describe it"),
+    ):
+        emissions_command = commands.add_parser(name, help=text)
+        emissions_command.add_argument("--species", required=True, choices=emissions.SPECIES)
+        emissions_command.add_argument("--year", required=True, type=int)
+        emissions_command.add_argument("--out", default="dist", help="where the asset is written")
+        emissions_command.add_argument("--workdir", default="work", help="where files are fetched")
+        emissions_command.set_defaults(run=run)
 
     surface_planning = commands.add_parser(
         "surface-plan", help="print the years whose ERA5 boundary layer is out but not built"
