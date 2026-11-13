@@ -162,8 +162,10 @@ class Issue:
 
 
 def issues(selected: Sequence[Place], every: int) -> list[Issue]:
-    """Issue days whose J+1 to J+7 reach the test, whose run and context are whole."""
-    first, last = TEST_START - timedelta(days=LEADS[-1]), TEST_END - timedelta(days=LEADS[0])
+    """Issue days whose J+1 to J+7 reach the test, whose run and context are whole: the last week's
+    short leads are lost, and Panache scores every method on the days left."""
+    # The run of the last issue day must reach t + 7 inside the table, which ends with the test.
+    first, last = TEST_START - timedelta(days=LEADS[-1]), TEST_END - timedelta(days=HORIZON - 1)
     out = []
     for place in selected:
         day = first
