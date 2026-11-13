@@ -21,11 +21,13 @@ def flux(folder: str, year: int) -> float:
     return (1 + FOLDERS.index(folder)) * 1e-12 * (1 + (year - 2021) * 0.5)
 
 
-def grid(folder: str, year: int, total_factor: float) -> np.ndarray:
+def grid(folder: str, year: int, total_factor: float, uncounted: str = "") -> np.ndarray:
+    """A sector's map, or the total of every sector but the `uncounted` one."""
     values = np.zeros((LATS.size, LONS.size), dtype=np.float32)
     if folder == edgar.TOTAL:
         for sector in FOLDERS:
-            values += grid(sector, year, 1.0)
+            if sector != uncounted:
+                values += grid(sector, year, 1.0)
         return values * total_factor
     if folder == "RCO":
         values[135, 185] = 2e-7
@@ -35,7 +37,14 @@ def grid(folder: str, year: int, total_factor: float) -> np.ndarray:
     return values
 
 
-def downloader(total_factor: float = 1.0, years: tuple[int, ...] = YEARS) -> edgar.Download:
+def downloader(
+    total_factor: float = 1.0,
+    years: tuple[int, ...] = YEARS,
+    absent: str = "",
+    counted: bool = False,
+) -> edgar.Download:
+    """Zips of `years` for every sector; the `absent` one has no file at all, and the total
+    counts it only if `counted`."""
     asked: list[str] = []
 
     def download(url: str, target: Path) -> None:
@@ -44,7 +53,7 @@ def downloader(total_factor: float = 1.0, years: tuple[int, ...] = YEARS) -> edg
         assert url == f"{edgar.BASE}/PM2.5/{folder}/{folder}_flx_nc.zip"
         with zipfile.ZipFile(target, "w") as archive:
             archive.writestr("_readme.html", "x")
-            for year in years:
+            for year in years if folder != absent else ():
                 name = f"v8.1_FT2022_AP_PM2.5_{year}_{folder}_flx.nc"
                 dataset = netCDF4.Dataset(name, "w", memory=1024)
                 dataset.createDimension("lat", LATS.size)
@@ -52,7 +61,7 @@ def downloader(total_factor: float = 1.0, years: tuple[int, ...] = YEARS) -> edg
                 dataset.createVariable("lat", "f8", ("lat",))[:] = LATS
                 dataset.createVariable("lon", "f8", ("lon",))[:] = LONS
                 fluxes = dataset.createVariable("fluxes", "f4", ("lat", "lon"), fill_value=np.nan)
-                fluxes[:] = grid(folder, year, total_factor)
+                fluxes[:] = grid(folder, year, total_factor, "" if counted else absent)
                 archive.writestr(name, bytes(dataset.close()))
 
     download.asked = asked  # type: ignore[attr-defined]
@@ -99,9 +108,38 @@ def test_sectors_that_do_not_add_up_to_the_total_stop_the_build(tmp_path: Path) 
     assert list((tmp_path / "work").iterdir()) == []
 
 
-def test_a_zip_without_the_year_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="one file for 2019"):
-        edgar.build([2019], tmp_path / "dist", tmp_path / "work", downloader(), box=BOX)
+def test_a_sector_without_a_file_for_the_year_emitted_nothing(tmp_path: Path) -> None:
+    """EDGAR's supersonic sector has no file after 2003, and its total counts nothing for it."""
+    download = downloader(absent="TNR_Aviation_SPS")
+    [path] = edgar.build([2021], tmp_path / "dist", tmp_path / "work", download, box=BOX)
+    assert emissions.Header.unpack(path.read_bytes()).sectors == tuple(edgar.SURFACE.values())
+
+    # A surface sector with no file is written as zeros.
+    download = downloader(absent="AGS")
+    [path] = edgar.build([2021], tmp_path / "dist", tmp_path / "work", download, box=BOX)
+    assert not emissions.read_tile(path.read_bytes(), 0, 0, 0)[0].any()
+    assert emissions.read_tile(path.read_bytes(), 0, 0, 0)[1].all()
+
+
+def test_a_missing_file_the_total_counts_is_caught(tmp_path: Path) -> None:
+    download = downloader(absent="TRO", counted=True)
+    with pytest.raises(ValueError, match="add up"):
+        edgar.build([2021], tmp_path / "dist", tmp_path / "work", download, box=BOX)
+
+
+def test_a_total_or_a_year_stored_twice_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="total has no file for 2021"):
+        edgar.build(
+            [2021], tmp_path / "dist", tmp_path / "work", downloader(absent="TOTALS"), box=BOX
+        )
+    with zipfile.ZipFile(tmp_path / "twice.zip", "w") as archive:
+        archive.writestr("a_2021_x.nc", b"")
+        archive.writestr("b_2021_x.nc", b"")
+    with (
+        zipfile.ZipFile(tmp_path / "twice.zip") as archive,
+        pytest.raises(ValueError, match="found 2"),
+    ):
+        edgar.fluxes(archive, 2021, BOX)
 
 
 def test_a_download_is_streamed_and_tried_again(
