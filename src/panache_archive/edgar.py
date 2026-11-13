@@ -14,7 +14,7 @@ kg m⁻² s⁻¹, at 0.1°, 1970-2022, on the same cells as CAMS-GLOB-ANT.
 - **Kept** (`SURFACE`): the 20 sectors emitted at or near the ground, each under a name of at
   most 8 letters. Aviation's climb, cruise and supersonic sectors (`ALOFT`) are emitted aloft:
   a surface footprint does not see them. They are read only to check that every sector adds up
-  to EDGAR's own `TOTALS`.
+  to EDGAR's own `TOTALS`. A sector with no file for a year emitted nothing that year.
 - **Assets**: `emissions-edgar_pm25-<year>.emissions`, the format of `emissions` with one
   period a year (EDGAR's maps are yearly) and a scale of 1e10 (EDGAR's largest cells are ten
   times CAMS-GLOB-ANT's).
@@ -97,11 +97,14 @@ def fetch(url: str, target: Path) -> None:
             logger.warning("%s: cut short, trying again", url)
 
 
-def fluxes(archive: zipfile.ZipFile, year: int, box: Box) -> NDArray[np.float32]:
+def fluxes(archive: zipfile.ZipFile, year: int, box: Box) -> NDArray[np.float32] | None:
     """A sector's year over the box, kg m⁻² s⁻¹, shaped (row, column); nothing where EDGAR has
-    no value."""
+    no value. None when the sector has no file for the year: EDGAR writes none for a year a
+    sector emits nothing (supersonic flight after 2003)."""
     names = [name for name in archive.namelist() if f"_{year}_" in name and name.endswith(".nc")]
-    if len(names) != 1:
+    if not names:
+        return None
+    if len(names) > 1:
         raise ValueError(f"expected one file for {year}, found {len(names)}")
     with netCDF4.Dataset(names[0], memory=archive.read(names[0])) as dataset:
         rows = _positions(np.asarray(dataset.variables["lat"][:], dtype=np.float64), box.lats)
@@ -130,6 +133,12 @@ def build(
             with zipfile.ZipFile(source) as archive:
                 for year in years:
                     grid = fluxes(archive, year, box)
+                    if grid is None:
+                        if folder == TOTAL:
+                            raise ValueError(f"EDGAR's total has no file for {year}")
+                        # The check against the total below catches a file that should exist.
+                        logger.warning("%s has no file for %d: taken as zero", folder, year)
+                        grid = np.zeros((box.rows, box.columns), dtype=np.float32)
                     if folder == TOTAL:
                         totals[year] = float(grid.sum(dtype=np.float64))
                         continue
