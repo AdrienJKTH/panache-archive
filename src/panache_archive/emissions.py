@@ -20,8 +20,9 @@ those are the species taken (`SPECIES`).
   measured by the pilot, panache-archive#55).
 
 The format, little-endian, after the `.winds` files':
-- **Header**, 64 bytes (`HEADER`): magic, version, year, months, sectors, rows, columns, tile
-  side, then as float64 the south and west centres, the step and the scale.
+- **Header**, 64 bytes (`HEADER`): magic, version, year, periods, sectors, rows, columns, tile
+  side, then as float64 the south and west centres, the step and the scale. The periods are
+  the year's 12 months here, and 1 for an inventory with one map a year (`edgar`).
 - **Sector names**: 8 ASCII bytes each, padded with zeros (`res`, `tro`, ...).
 - **Offset table**: one `uint64` per frame and one more. The frame of month `m` (from 0) and
   tile `(r, c)` is `(m * tile_rows + r) * tile_columns + c`.
@@ -109,6 +110,8 @@ class Header:
     year: int
     sectors: tuple[str, ...]
     box: Box
+    periods: int = MONTHS
+    scale: float = SCALE
 
     @property
     def size(self) -> int:
@@ -124,7 +127,7 @@ class Header:
             MAGIC,
             FORMAT,
             self.year,
-            MONTHS,
+            self.periods,
             len(self.sectors),
             box.rows,
             box.columns,
@@ -132,22 +135,22 @@ class Header:
             box.south,
             box.west,
             box.step,
-            SCALE,
+            self.scale,
         )
         return head + b"".join(NAME.pack(name.encode("ascii")) for name in self.sectors)
 
     @classmethod
     def unpack(cls, data: bytes) -> "Header":
-        magic, version, year, months, count, rows, columns, tile, south, west, step, scale = (
+        magic, version, year, periods, count, rows, columns, tile, south, west, step, scale = (
             HEADER.unpack(data[: HEADER.size])
         )
-        if (magic, version, months, scale) != (MAGIC, FORMAT, MONTHS, SCALE):
-            raise ValueError("not a version 1 `.emissions` file of this layout")
+        if (magic, version) != (MAGIC, FORMAT) or periods < 1 or not scale > 0:
+            raise ValueError("not a version 1 `.emissions` file")
         names = tuple(
             NAME.unpack_from(data, HEADER.size + NAME.size * index)[0].rstrip(b"\0").decode("ascii")
             for index in range(count)
         )
-        return cls(year, names, Box(south, west, step, rows, columns, tile))
+        return cls(year, names, Box(south, west, step, rows, columns, tile), periods, scale)
 
 
 def request(species: str, year: int) -> dict[str, list[str]]:
@@ -228,14 +231,16 @@ def read(path: Path, box: Box = EUROPE) -> tuple[tuple[str, ...], NDArray[np.flo
 
 
 def write(path: Path, header: Header, year: NDArray[np.float32]) -> None:
-    """Writes a year shaped (month, sector, row, column), kg m⁻² s⁻¹."""
-    scaled = year.astype(np.float64) * SCALE
+    """Writes a year shaped (period, sector, row, column), kg m⁻² s⁻¹."""
+    if year.shape[:2] != (header.periods, len(header.sectors)):
+        raise ValueError(f"expected {header.periods} periods of {len(header.sectors)} sectors")
+    scaled = year.astype(np.float64) * header.scale
     if not np.isfinite(scaled).all() or scaled.min() < 0 or scaled.max() > np.finfo(np.float16).max:
         raise ValueError("emissions missing, negative or beyond float16")
     kept = scaled.astype("<f2")
     box = header.box
     frames = []
-    for month in range(MONTHS):
+    for month in range(header.periods):
         for index, block in enumerate(_tiles(kept[month], box.tile)):
             tile_row, tile_column = divmod(index, box.tile_columns)
             frames.append(FRAME_HEADER.pack(month, tile_row, tile_column, 0) + encoded(block))
@@ -261,7 +266,8 @@ def read_tile(data: bytes, month: int, tile_row: int, tile_column: int) -> Float
     rows = min(box.tile, box.rows - tile_row * box.tile)
     columns = min(box.tile, box.columns - tile_column * box.tile)
     shape = (len(header.sectors), rows, columns)
-    return decoded(data[start + FRAME_HEADER.size : end], shape).astype(np.float64) / SCALE
+    values = decoded(data[start + FRAME_HEADER.size : end], shape).astype(np.float64)
+    return values / header.scale
 
 
 def _netcdf(species: str, year: int, workdir: Path, fetch: Download) -> tuple[Path, int]:
