@@ -192,12 +192,14 @@ RI_COUNTRY: Final[Mapping[str, str]] = {
 def daily(times: NDArray[np.datetime64], values: FloatArray) -> Daily:
     """Each UTC day's mean of the valid `values`, for days with at least `MIN_HOURS` valid hours.
 
-    The time step is the series' median gap. Up to an hour, a day's valid hours are the distinct
-    hours its valid samples start in; beyond, each valid sample counts for the whole step."""
+    A time held twice counts once, with its first value. The time step is the series' median gap.
+    Below an hour, a day's valid hours are the distinct hours its valid samples start in; from an
+    hour up, each valid sample counts for the whole step, so that hourly times a minute early
+    (04:59 for 05:00, as in a workbook of RI-URBANS) still count as their hours."""
     seconds = times.astype("datetime64[s]").astype(np.int64)
-    order = np.argsort(seconds, kind="stable")
-    seconds, values = seconds[order], values[order]
-    gaps = np.diff(np.unique(seconds))
+    seconds, first = np.unique(seconds, return_index=True)
+    values = values[first]
+    gaps = np.diff(seconds)
     step = float(np.median(gaps)) if gaps.size else 3600.0
     valid = ~np.isnan(values) & (values > MISSING_BELOW)
     seconds, values = seconds[valid], values[valid]
@@ -205,7 +207,7 @@ def daily(times: NDArray[np.datetime64], values: FloatArray) -> Daily:
     days, index = np.unique(day, return_inverse=True)
     sums = np.bincount(index, weights=values, minlength=days.size)
     counts = np.bincount(index, minlength=days.size)
-    if step <= 3600:
+    if step < 3600:
         hour = seconds // 3600
         _, first = np.unique(hour, return_index=True)
         hours = np.bincount(index[first], minlength=days.size)

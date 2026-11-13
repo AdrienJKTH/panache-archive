@@ -111,6 +111,15 @@ def test_daily_counts_coarse_samples_for_their_step() -> None:
     assert found.hours.tolist() == [24]
 
 
+def test_daily_counts_hourly_times_a_minute_early() -> None:
+    minutes = [60 * h - (1 if h % 3 == 2 else 0) for h in range(24)]
+    times = np.array([DAY + timedelta(minutes=m) for m in minutes] + [DAY], "M8[s]")
+    values = np.r_[np.full(24, 2.0), 9.0]  # the last time is held twice: its first value counts
+    found = targets.daily(times, values)
+    assert found.hours.tolist() == [24]
+    assert found.means.tolist() == [2.0]
+
+
 def test_daily_drops_fill_values() -> None:
     times = np.array([DAY + timedelta(hours=h) for h in range(24)], "M8[s]")
     values = np.full(24, 5.0)
