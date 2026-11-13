@@ -5,3 +5,9 @@ CAMS's global anthropogenic emissions by sector over Europe and its surroundings
 - **Assets**: one per species and year, `emissions-black_carbon-2021.emissions` (~30 MB), 2013-2026 (the last years are the inventory's projections).
 - **Format**: a 64-byte header, the sectors' names, a table of offsets, then one zstd frame per month and 10° tile, of float16 values (the emission times 1e11). One tile's month is read with two HTTP range requests. `src/panache_archive/emissions.py` describes it in full.
 - **Source and licence**: CAMS-GLOB-ANT v6.2 (Soulie et al. 2024, ESSD 16, 2261-2279, doi:10.5194/essd-16-2261-2024), from the Copernicus Atmosphere Monitoring Service's Atmosphere Data Store, dataset `cams-global-emission-inventories`, licence CC-BY-4.0. Cut to the box and rounded to float16; otherwise unchanged. Generated using Copernicus Atmosphere Monitoring Service information.
+
+**EDGAR's primary PM2.5** (CAMS-GLOB-ANT has no particulate mass)
+
+- **Content**: yearly emissions of primary PM2.5, kg m⁻² s⁻¹, for the 20 sectors of EDGAR v8.1 emitted at or near the ground (aviation's climb, cruise and supersonic sectors are left out), on the same cells and tiles.
+- **Assets**: one per year, `emissions-edgar_pm25-2021.emissions`, 2013-2022. The same format, with one period a year and a scale of 1e10, both written in the header.
+- **Source and use conditions**: EDGAR v8.1 Global Air Pollutant Emissions (Crippa et al. 2024), European Commission, Joint Research Centre, https://edgar.jrc.ec.europa.eu/dataset_ap81. Reuse is authorised provided the source is acknowledged (the European Commission's reuse notice). Cut to the box and rounded to float16; otherwise unchanged.

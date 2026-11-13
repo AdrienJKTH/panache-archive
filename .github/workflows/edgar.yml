@@ -1,0 +1,59 @@
+name: EDGAR
+
+# EDGAR v8.1's primary PM2.5 by sector for Panache's footprints (Panache's D86): CAMS-GLOB-ANT
+# (the `Emissions` workflow) has no particulate mass. One job downloads the 24 sector zips
+# (3.2 GB), cuts each year to the winds archive's box and publishes
+# `emissions-edgar_pm25-<year>.emissions` into the release `emissions-v1`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "`all` (2013-2022), a year, or a span such as 2020-2022"
+        default: all
+
+concurrency:
+  group: edgar
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: emissions-v1
+
+jobs:
+  build:
+    name: PM2.5 by sector
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build
+        env:
+          YEARS: ${{ inputs.years }}
+        run: |
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -f "%e %M" -o took.txt uv run panache-archive edgar-build \
+            --years "$YEARS" --out dist --workdir "$RUNNER_TEMP/edgar" 2> build.log \
+            || { cat build.log; exit 1; }
+          cat build.log
+          read -r seconds kilobytes < took.txt
+          { echo "Built in ${seconds} s, peak memory $((kilobytes / 1024)) MB."; echo
+            echo '| Asset | Size |'; echo '|---|---|'
+            du -k dist/* | awk '{ sub("dist/", "", $2); print "| " $2 " | " $1 " kB |" }'
+            echo; grep -o 'emissions-edgar.*' build.log
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE" dist/*.emissions --clobber
+          gh release edit "$RELEASE" --notes-file docs/emissions-release.md

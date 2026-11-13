@@ -1,8 +1,8 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
 `era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `targets`, `static`,
 `fine`, `fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build`,
-`surface-pilot`, `emissions-plan`, `emissions-build` and `emissions-pilot`, as the workflows
-run them."""
+`surface-pilot`, `emissions-plan`, `emissions-build`, `emissions-pilot` and `edgar-build`, as
+the workflows run them."""
 
 import argparse
 import asyncio
@@ -21,6 +21,7 @@ from huggingface_hub import HfApi
 from panache_archive import (
     ads,
     check,
+    edgar,
     emissions,
     era5,
     fine,
@@ -267,6 +268,13 @@ def _winds_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _edgar_build(args: argparse.Namespace) -> int:
+    years = sorted(plan.parse_years(args.years) or range(edgar.FIRST_YEAR, edgar.LAST_YEAR + 1))
+    for path in edgar.build(years, Path(args.out), Path(args.workdir)):
+        print(path)
+    return 0
+
+
 def _emissions_plan(args: argparse.Namespace) -> int:
     built = set(Path(args.built).read_text(encoding="utf-8").split()) if args.built else set()
     years = plan.parse_years(args.years)
@@ -397,6 +405,14 @@ def _parser() -> argparse.ArgumentParser:
     winds_building.add_argument("--days", type=int, help="only the month's first days (pilots)")
     winds_building.add_argument("--out", default="dist", help="where the asset is written")
     winds_building.set_defaults(run=_winds_build)
+
+    edgar_building = commands.add_parser(
+        "edgar-build", help="build EDGAR's PM2.5 by sector over the winds' box, a file a year"
+    )
+    edgar_building.add_argument("--years", default="all", help="`all`, a year, or a span")
+    edgar_building.add_argument("--out", default="dist", help="where the assets are written")
+    edgar_building.add_argument("--workdir", default="work", help="where zips are downloaded")
+    edgar_building.set_defaults(run=_edgar_build)
 
     emissions_planning = commands.add_parser(
         "emissions-plan", help="print the species and years of CAMS-GLOB-ANT not built yet"
