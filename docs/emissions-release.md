@@ -1,0 +1,7 @@
+CAMS's global anthropogenic emissions by sector over Europe and its surroundings, for [Panache](https://github.com/AdrienJKTH/panache)'s Lagrangian footprints (its D86).
+
+- **Content**: monthly emissions of black carbon, organic carbon and nitrogen oxides, kg m⁻² s⁻¹, by sector (`awb` agricultural waste burning, `ene` power, `fef` fugitives, `ind` industry, `ref` refineries, `res` residential, `com` commercial, `shp` ships, `swd` solid waste, `tnr` off-road transport, `tro` road transport; each file's header lists its own). The inventory has no PM2.5.
+- **Grid**: the inventory's 0.1° cells over 15-85° N and 70° W-90° E (the `winds-europe-v1` box): 700 rows by 1,600 columns, in 10° tiles.
+- **Assets**: one per species and year, `emissions-black_carbon-2021.emissions` (~30 MB), 2013-2026 (the last years are the inventory's projections).
+- **Format**: a 64-byte header, the sectors' names, a table of offsets, then one zstd frame per month and 10° tile, of float16 values (the emission times 1e11). One tile's month is read with two HTTP range requests. `src/panache_archive/emissions.py` describes it in full.
+- **Source and licence**: CAMS-GLOB-ANT v6.2 (Soulie et al. 2024, ESSD 16, 2261-2279, doi:10.5194/essd-16-2261-2024), from the Copernicus Atmosphere Monitoring Service's Atmosphere Data Store, dataset `cams-global-emission-inventories`, licence CC-BY-4.0. Cut to the box and rounded to float16; otherwise unchanged. Generated using Copernicus Atmosphere Monitoring Service information.

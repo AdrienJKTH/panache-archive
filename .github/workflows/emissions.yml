@@ -1,0 +1,128 @@
+name: Emissions
+run-name: >-
+  ${{ github.event_name == 'pull_request' && github.event.pull_request.title || 'Emissions' }}
+
+# CAMS's global anthropogenic emissions for Panache's footprints (Panache's D86): black carbon,
+# organic carbon and nitrogen oxides by sector and month, cut to the winds archive's box, one
+# asset per species and year in the release `emissions-v1`.
+#
+# The `pilot-emissions` label on a pull request downloads one year of two species and describes
+# what came.
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "`all` (2013-2026), a year, or a span such as 2020-2022"
+        default: all
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: emissions-${{ github.event_name == 'pull_request' && github.ref || 'build' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: emissions-v1
+  CDSAPI_URL: https://ads.atmosphere.copernicus.eu/api
+
+jobs:
+  plan:
+    name: Plan
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "CAMS-GLOB-ANT emissions by sector, for footprints"
+          --notes-file docs/emissions-release.md
+      - name: List the assets already built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+      - name: Plan
+        id: plan
+        env:
+          YEARS: ${{ inputs.years }}
+        run: |
+          matrix=$(uv run panache-archive emissions-plan --years "$YEARS" --built built.txt)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) species-years to build"' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.species }} ${{ matrix.year }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      # The store queues requests: a few at a time.
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CDSAPI_KEY: ${{ secrets.ADS_KEY }}
+          SPECIES: ${{ matrix.species }}
+          YEAR: ${{ matrix.year }}
+        run: |
+          set -o pipefail
+          start=$SECONDS
+          path=$(uv run panache-archive emissions-build --species "$SPECIES" --year "$YEAR" \
+            --out dist --workdir "$RUNNER_TEMP/emissions" 2> build.log | tail -1) \
+            || { cat build.log; exit 1; }
+          cat build.log
+          gh release upload "$RELEASE" "$path" --clobber
+          echo "| $(basename "$path") | $(du -k "$path" | cut -f1) kB | $((SECONDS - start)) s |" \
+            "$(grep -o 'emissions-.*' build.log | tail -1) |" >> "$GITHUB_STEP_SUMMARY"
+
+  pilot:
+    name: Pilot, black carbon and organic carbon in 2021
+    if: github.event_name == 'pull_request' && github.event.label.name == 'pilot-emissions'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Download and describe
+        env:
+          CDSAPI_KEY: ${{ secrets.ADS_KEY }}
+        run: |
+          set -o pipefail
+          for species in black_carbon organic_carbon; do
+            start=$SECONDS
+            uv run panache-archive emissions-pilot --species "$species" --year 2021 \
+              --workdir "$RUNNER_TEMP/emissions" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Took $((SECONDS - start)) s." | tee -a "$GITHUB_STEP_SUMMARY"
+          done
