@@ -136,12 +136,17 @@ DAY_FIRST: Final = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2}):(\d{2
 EXCEL_EPOCH: Final = np.datetime64("1899-12-30T00:00:00", "s")
 """Day 0 of a workbook's serial dates."""
 COORDINATE: Final = re.compile(
-    # Minutes marked by ' or a prime (U+2032, U+2019, U+00B4), seconds by " or a double prime.
-    r"(?P<degrees>-?\d+(?:\.\d+)?)\s*(?:°|º|deg)?\s*"
+    # Minutes marked by ' or a prime (U+2032, U+2019, U+00B4); seconds, which only follow minutes,
+    # by one or two of them or a double quote (U+0022, U+2033, U+201D); a minus may be U+2212.
+    r"(?P<degrees>[-\u2212]?\d+(?:\.\d+)?)\s*(?:\u00b0|\u00ba|deg)?\s*"
     r"(?:(?P<minutes>\d+(?:\.\d+)?)\s*['\u2032\u2019\u00b4]\s*)?"
-    r"(?:(?P<seconds>\d+(?:\.\d+)?)\s*(?:\"|″|”|''|\u2032\u2032)\s*)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)\s*(?:[\"\u2033\u201d]|['\u2032\u2019\u00b4]{1,2})\s*)?"
     r"(?P<hemisphere>[NSEWnsew](?![a-z]))?"
 )
+POSITION_FIXES: Final[Mapping[str, tuple[float, float]]] = {
+    # The workbook gives the latitude twice; Chen et al.'s Marseille site is the same station.
+    "Marseille_Longchamp_AE33_2017-2019": (43.30531, 5.39469),
+}
 DOMAIN_SOUTH, DOMAIN_NORTH, DOMAIN_WEST, DOMAIN_EAST = 30.0, 72.0, -25.0, 45.0
 """CAMS Europe's domain: a position outside it is misread."""
 CHEN_FILE: Final = re.compile(r"(?:PMF|External)_data/(?P<site>[a-z]+)(?:_PMF)?\+\+\.txt$")
@@ -307,8 +312,11 @@ def ri_urbans_series(archive: bytes) -> tuple[list[Site], list[tuple[str, str, D
             times, columns = _ri_columns(book[RI_DATA_SHEET].iter_rows(values_only=True))
             book.close()
             key = file.removesuffix(".xlsx")
+            for variable, values in columns.items():
+                if not np.any(np.isfinite(values)):
+                    logger.warning("RI-URBANS: no number for %s in %s", variable, file)
             written = metadata.get("COORDINATES", "")
-            position = _coordinates(written)
+            position = POSITION_FIXES.get(key) or _coordinates(written)
             if position is None:
                 logger.warning("RI-URBANS: %s's position %r unread, left out", file, written)
                 continue
@@ -440,7 +448,7 @@ def _ri_columns(
     whose first is the time, then one row per time."""
     iterator = iter(rows)
     next(iterator)  # units
-    header = [str(cell).strip() if cell is not None else "" for cell in next(iterator)]
+    header = [" ".join(str(cell).split()) if cell is not None else "" for cell in next(iterator)]
     wanted = {
         variable: header.index(next(name for name in names if name in header))
         for variable, names in RI_COLUMNS.items()
@@ -483,6 +491,8 @@ def _coordinates(text: str) -> tuple[float, float] | None:
     found = [m for m in COORDINATE.finditer(text) if m["degrees"]]
     if len(found) < 2:
         return None
+    if (found[1]["hemisphere"] or "").upper() in {"N", "S"}:
+        return None  # a latitude twice
     lat, lon = (_degrees(m) for m in found[:2])
     if not (DOMAIN_SOUTH <= lat <= DOMAIN_NORTH and DOMAIN_WEST <= lon <= DOMAIN_EAST):
         return None
@@ -490,7 +500,7 @@ def _coordinates(text: str) -> tuple[float, float] | None:
 
 
 def _degrees(found: re.Match[str]) -> float:
-    degrees = float(found["degrees"])
+    degrees = float(found["degrees"].replace("\u2212", "-"))
     minutes = float(found["minutes"] or 0) / 60
     seconds = float(found["seconds"] or 0) / 3600
     value = abs(degrees) + minutes + seconds
@@ -516,8 +526,9 @@ def _number(cell: Any) -> float:
         return np.nan
     if isinstance(cell, int | float):
         return float(cell)
+    text = str(cell).strip()
     try:
-        return float(str(cell).strip())
+        return float(text if "." in text else text.replace(",", "."))
     except ValueError:
         return np.nan
 

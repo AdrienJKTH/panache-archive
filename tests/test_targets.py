@@ -202,6 +202,13 @@ def test_to_table_of_nothing() -> None:
         ("N/A", None),
         ("95, 10", None),
         ("37, 58", None),
+        ("39.51\u00b0, \u22120.42\u00b0", (39.51, -0.42)),
+        (
+            "60\u00b017\u201930.2\u2019\u2019, 25\u00b006\u201946.3\u2019\u2019",
+            (60.291722, 25.112861),
+        ),
+        ("45\u00ba28\u00b444\u00b4\u00b4N, 9\u00ba14\u00b407\u00b4\u00b4E", (45.478889, 9.235278)),
+        ("43°18'19.1\"N, 43°18'19.1\"N", None),
     ],
 )
 def test_coordinates(text: str, expected: tuple[float, float] | None) -> None:
@@ -218,6 +225,12 @@ def test_coordinates(text: str, expected: tuple[float, float] | None) -> None:
 )
 def test_first_word(key: str, place: str) -> None:
     assert targets._first_word(key) == place
+
+
+@pytest.mark.parametrize(("cell", "expected"), [("1,25", 1.25), ("1.25", 1.25), ("n/a", None)])
+def test_number_reads_a_decimal_comma(cell: str, expected: float | None) -> None:
+    found = targets._number(cell)
+    assert (None if np.isnan(found) else found) == expected
 
 
 @pytest.mark.parametrize(
