@@ -1,0 +1,96 @@
+name: Assimilation experiment
+
+# Panache's D90: do station measurements bring a day of CAMS's stream closer to the truth where
+# there is no station? Optimal interpolation of the innovations and a learned correction, judged
+# at the background stations of `downscaling-europe-v1` held out by 0.5° block and by country,
+# over 2024 and 2025. The reanalysis (2013-2025, for the seasons' percentiles) is read from
+# `cams-europe-v1`, the stream from AWS Open Data (~2.5 GB a pollutant), a block at a time.
+#
+# The fields read (the stream, the reanalysis and the stations as matrices) are kept as an
+# artifact: give `fields_run` the id of a run that has them to compute again without reading.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      pollutant:
+        description: "The pollutant"
+        default: pm2_5
+      every:
+        description: "One day in this many"
+        default: "2"
+      fields_run:
+        description: "A run of this workflow whose fields are read back (empty: read them)"
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  experiment:
+    name: Assimilation experiment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      # One thread a solve, four folds side by side: the systems are small and many.
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Fetch the stations and the fixed layers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLLUTANT: ${{ inputs.pollutant }}
+          FIELDS_RUN: ${{ inputs.fields_run }}
+        run: |
+          gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs \
+            --pattern "stations-*-$POLLUTANT.parquet" --pattern "static-europe-1km.npz"
+          mkdir -p fields
+          if [ -n "$FIELDS_RUN" ]; then
+            gh run download "$FIELDS_RUN" --repo "$GITHUB_REPOSITORY" \
+              --name "assimilation-fields-$POLLUTANT" --dir fields
+          fi
+          ls -l inputs fields
+          df -h / | tail -1
+      - name: Experiment
+        env:
+          POLLUTANT: ${{ inputs.pollutant }}
+          EVERY: ${{ inputs.every }}
+        run: |
+          set -o pipefail
+          mkdir -p out
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -v -o out/time.txt \
+            /tmp/panache/bin/panache-assimilation-experiment --inputs inputs --fields fields \
+            --pollutants "$POLLUTANT" --every "$EVERY" --workers 4 \
+            --out "out/assimilation-$POLLUTANT.json" \
+            | tee "out/assimilation-$POLLUTANT.md"
+          {
+            cat "out/assimilation-$POLLUTANT.md"
+            grep -E "Elapsed|Maximum resident" out/time.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: assimilation-experiment-${{ inputs.pollutant }}
+          path: out/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: assimilation-fields-${{ inputs.pollutant }}
+          path: fields/
+          if-no-files-found: ignore
