@@ -24,6 +24,9 @@ on:
       fields_run:
         description: "A run of this workflow whose fields are read back (empty: read them)"
         default: ""
+      only:
+        description: "Only the methods whose name holds this (empty: all)"
+        default: ""
 
 permissions:
   contents: read
@@ -70,13 +73,14 @@ jobs:
         env:
           POLLUTANT: ${{ inputs.pollutant }}
           EVERY: ${{ inputs.every }}
+          ONLY: ${{ inputs.only }}
         run: |
           set -o pipefail
           mkdir -p out
           [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
           /usr/bin/time -v -o out/time.txt \
             /tmp/panache/bin/panache-assimilation-experiment --inputs inputs --fields fields \
-            --pollutants "$POLLUTANT" --every "$EVERY" --workers 4 \
+            --pollutants "$POLLUTANT" --every "$EVERY" --workers 4 ${ONLY:+--only "$ONLY"} \
             --out "out/assimilation-$POLLUTANT.json" \
             | tee "out/assimilation-$POLLUTANT.md"
           {
