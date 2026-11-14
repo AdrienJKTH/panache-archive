@@ -6,10 +6,23 @@ name: Source targets
 # CC BY 4.0 on Zenodo, as daily UTC means (`panache-archive targets`). Labelling a pull request
 # `pilot-sources` surveys both records' files and builds the assets as the run's artifacts,
 # without touching the release; labelling it `pilot-combustion` builds them and runs Panache's
-# combustion experiment on them (`panache-combustion-experiment`, Panache's D87).
+# combustion experiment on them (`panache-combustion-experiment`, Panache's D87). Dispatched, it
+# builds the release, runs the experiment on the release, or both.
 
 on:
   workflow_dispatch:
+    inputs:
+      build:
+        description: "Build and publish the release"
+        type: boolean
+        default: true
+      experiment:
+        description: "Run Panache's combustion experiment on the release"
+        type: boolean
+        default: false
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache the experiment runs"
+        default: main
   pull_request:
     types: [labeled]
 
@@ -28,7 +41,7 @@ jobs:
   build:
     name: Build
     if: >
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' && inputs.build)
       || github.event.label.name == 'pilot-sources'
       || github.event.label.name == 'pilot-combustion'
     runs-on: ubuntu-24.04
@@ -84,7 +97,13 @@ jobs:
   experiment:
     name: Combustion experiment
     needs: build
-    if: github.event.label.name == 'pilot-combustion'
+    # After a pilot's build, on its artifact; dispatched, on the release, once a build asked for
+    # in the same run has published it.
+    if: >
+      always()
+      && ((github.event.label.name == 'pilot-combustion' && needs.build.result == 'success')
+      || (github.event_name == 'workflow_dispatch' && inputs.experiment
+      && needs.build.result != 'failure' && needs.build.result != 'cancelled'))
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
@@ -95,7 +114,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: AdrienJKTH/panache
-          ref: main
+          ref: ${{ inputs.panache || 'main' }}
           ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
           path: panache
           persist-credentials: false
@@ -103,10 +122,19 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: Take the pilot's targets
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sources
           path: inputs
+      - name: Take the release's targets
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release download "$RELEASE" --repo "$GITHUB_REPOSITORY" --dir inputs
+          --pattern "*.parquet"
       - name: Fetch the fixed layers
         env:
           GH_TOKEN: ${{ github.token }}
