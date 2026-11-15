@@ -93,15 +93,17 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: live-*
-          path: dist
-          merge-multiple: true
+          path: artifacts
       - name: Upload
         run: |
           gh release view "$RELEASE" > /dev/null 2>&1 \
             || gh release create "$RELEASE" --title "The day's values at Europe's stations, live" \
               --notes-file docs/stations-live-release.md --latest=false
-          gh release upload "$RELEASE" dist/*.parquet --clobber
-          ls dist/*.parquet | wc -l | xargs echo "assets uploaded:" >> "$GITHUB_STEP_SUMMARY"
+          # Each artifact keeps its own `dist/` (beside its build.log).
+          mapfile -t assets < <(find artifacts -name 'stations-live-*.parquet')
+          if (( ${#assets[@]} == 0 )); then echo "no asset built" >&2; exit 1; fi
+          gh release upload "$RELEASE" "${assets[@]}" --clobber
+          echo "assets uploaded: ${#assets[@]}" >> "$GITHUB_STEP_SUMMARY"
       - name: Delete the days older than KEEP_DAYS
         run: |
           oldest=$(date -u -d "$KEEP_DAYS days ago" +%F)
