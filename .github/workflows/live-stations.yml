@@ -5,13 +5,18 @@ name: Live stations
 # UTC day, of the validated assets' schema (`panache-archive live-stations`, Panache's D92). Every
 # file of the service is downloaded once a pollutant (~2,000 points, a year's hours each), so a
 # range of days costs what a day costs. A release holds at most 1,000 assets: days older than
-# KEEP_DAYS are deleted, the validated hours replacing them in the autumn of the next year.
+# KEEP_DAYS are deleted, the validated hours replacing them in the autumn of the next year. It
+# runs each morning at 06:40 UTC.
 #
 # With `compare_year` and `openaq_locations`, it also scores OpenAQ's archive of the EEA's live
 # feed for that year against the validated days of `downscaling-europe-v1` at the same points
 # (`panache-archive live-compare`); the scores go to the summary and an artifact.
 
 on:
+  schedule:
+    # Each morning, the day before and the one before it: a network's late hours fill a day
+    # built too early, and the later build replaces its asset.
+    - cron: "40 6 * * *"
   workflow_dispatch:
     inputs:
       first_day:
@@ -61,6 +66,9 @@ jobs:
       - name: Build
         run: |
           args=(--pollutant "${{ matrix.pollutant }}" --out dist)
+          if [[ "${{ github.event_name }}" == schedule ]]; then
+            args+=(--first-day "$(date -u -d '2 days ago' +%F)" --last-day "$(date -u -d yesterday +%F)")
+          fi
           if [[ -n "${{ inputs.first_day }}" ]]; then args+=(--first-day "${{ inputs.first_day }}"); fi
           if [[ -n "${{ inputs.last_day }}" ]]; then args+=(--last-day "${{ inputs.last_day }}"); fi
           uv run panache-archive live-stations "${args[@]}" 2> build.log | tail -3
