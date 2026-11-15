@@ -1,0 +1,148 @@
+name: Live stations
+
+# Builds the day's values at Europe's monitoring stations from the EEA's up-to-date hours (E2a,
+# unverified), screened, into the release stations-live-v1: one Parquet asset per pollutant and
+# UTC day, of the validated assets' schema (`panache-archive live-stations`, Panache's D92). Every
+# file of the service is downloaded once a pollutant (~2,000 points, a year's hours each), so a
+# range of days costs what a day costs. A release holds at most 1,000 assets: days older than
+# KEEP_DAYS are deleted, the validated hours replacing them in the autumn of the next year.
+#
+# With `compare_year` and `openaq_locations`, it also scores OpenAQ's archive of the EEA's live
+# feed for that year against the validated days of `downscaling-europe-v1` at the same points
+# (`panache-archive live-compare`); the scores go to the summary and an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      first_day:
+        description: "The first UTC day, ISO (default: yesterday)"
+        default: ""
+      last_day:
+        description: "The last UTC day, ISO (default: the first)"
+        default: ""
+      compare_year:
+        description: "A past year to compare OpenAQ's live hours with the validated ones (empty: none)"
+        default: ""
+      openaq_locations:
+        description: "OpenAQ's location ids of its provider EEA, comma-separated"
+        default: ""
+
+concurrency:
+  group: live-stations
+  cancel-in-progress: false
+
+permissions:
+  contents: write # the release
+
+env:
+  RELEASE: stations-live-v1
+  KEEP_DAYS: 300
+  GH_TOKEN: ${{ github.token }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build ${{ matrix.pollutant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pollutant: [pm2_5, pm10, ozone]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Build
+        run: |
+          args=(--pollutant "${{ matrix.pollutant }}" --out dist)
+          if [[ -n "${{ inputs.first_day }}" ]]; then args+=(--first-day "${{ inputs.first_day }}"); fi
+          if [[ -n "${{ inputs.last_day }}" ]]; then args+=(--last-day "${{ inputs.last_day }}"); fi
+          uv run panache-archive live-stations "${args[@]}" 2> build.log | tail -3
+          grep -cE "WARNING" build.log || true
+          {
+            echo "### ${{ matrix.pollutant }}"
+            echo "Screening over every hour of the files: $(cat dist/screening-*.json)"
+            uv run python -c "
+          import json, sys, pyarrow.parquet as pq
+          for path in sorted(sys.argv[1:]):
+              meta = json.loads(pq.read_schema(path).metadata[b'panache_archive'])
+              print(f\"- {meta['day']}: {len(meta['points'])} points, {len(meta['countries'])} countries, left out {meta['left_out']}, removed {meta['screening']['removed']}\")
+          " dist/*.parquet
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: live-${{ matrix.pollutant }}
+          path: |
+            dist/*.parquet
+            build.log
+          retention-days: 7
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: live-*
+          path: dist
+          merge-multiple: true
+      - name: Upload
+        run: |
+          gh release view "$RELEASE" > /dev/null 2>&1 \
+            || gh release create "$RELEASE" --title "The day's values at Europe's stations, live" \
+              --notes-file docs/stations-live-release.md --latest=false
+          gh release upload "$RELEASE" dist/*.parquet --clobber
+          ls dist/*.parquet | wc -l | xargs echo "assets uploaded:" >> "$GITHUB_STEP_SUMMARY"
+      - name: Delete the days older than KEEP_DAYS
+        run: |
+          oldest=$(date -u -d "$KEEP_DAYS days ago" +%F)
+          for asset in $(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE" --paginate \
+              --jq '.assets[].name | select(startswith("stations-live-"))'); do
+            day=${asset%.parquet}
+            day=${day: -10}
+            if [[ "$day" < "$oldest" ]]; then
+              gh release delete-asset "$RELEASE" "$asset" --yes
+            fi
+          done
+
+  compare:
+    name: Compare live and validated
+    if: inputs.compare_year != '' && inputs.openaq_locations != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Download the validated days
+        run: |
+          for pollutant in pm2_5 pm10 ozone; do
+            gh release download downscaling-europe-v1 --dir validated \
+              --pattern "stations-*-$pollutant.parquet"
+          done
+      - name: Compare
+        run: |
+          echo "${{ inputs.openaq_locations }}" > locations.txt
+          uv run panache-archive live-compare --year "${{ inputs.compare_year }}" \
+            --locations locations.txt --validated validated --out compare.json \
+            2> compare.log >> "$GITHUB_STEP_SUMMARY"
+          tail -5 compare.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: compare
+          path: |
+            compare.json
+            compare.log
+          retention-days: 30

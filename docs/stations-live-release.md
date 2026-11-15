@@ -1,0 +1,8 @@
+The day's values at Europe's monitoring stations, from the EEA's up-to-date hours (E2a): unverified measurements of the national networks, as streamed (Panache's D92). They correct the map's days after the archive (Panache's D90).
+
+- `stations-live-<pollutant>-<day>.parquet`, for `pm2_5`, `pm10` and `ozone`: one row per sampling point with a value on that UTC day, every country the EEA's download service has. Columns `sampling_point` (dictionary-encoded), `day`, `mean` (µg/m³: the daily mean from at least 18 hours, or a value reported for the day; ozone's daily maximum 8-hour mean) and `hours`, as the validated assets of `downscaling-europe-v1`.
+- The Parquet metadata (`panache_archive`): the points, each with its station, position, altitude, type, area and country; the countries; the points left out for want of metadata; what the screening removed on that day.
+- Screening of the hours, before the statistic, an hour counted under the first rule that removes it: a negative value; a value above a ceiling no air in Europe reaches (2,000 µg/m³ for PM2.5, 5,000 for PM10, 800 for ozone); a value unchanged over 24 consecutive hours or more.
+- A day is built the morning after: its last hours may still be missing, and a later build of the same day replaces its asset. Days older than 300 are deleted (a release holds at most 1,000 assets); the validated hours replace them in the autumn of the next year.
+
+Built by the `Live stations` workflow (`panache-archive live-stations`) from the EEA's Air Quality Download Service. Source: European Environment Agency, Air Quality e-Reporting, up-to-date data (E2a), https://www.eea.europa.eu/en/datahub/datahubitem-view/778ef9f5-6293-4846-badd-56a29c70880d. Unverified: values may change or be withdrawn once validated.

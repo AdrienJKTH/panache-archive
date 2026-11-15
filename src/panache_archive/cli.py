@@ -1,5 +1,6 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
-`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `targets`, `static`,
+`era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `live-stations`,
+`live-compare`, `targets`, `static`,
 `fine`, `fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build`,
 `surface-pilot`, `emissions-plan`, `emissions-build`, `emissions-pilot` and `edgar-build`, as
 the workflows run them."""
@@ -25,6 +26,8 @@ from panache_archive import (
     emissions,
     era5,
     fine,
+    live_compare,
+    live_stations,
     merra2,
     mirror,
     plan,
@@ -202,6 +205,34 @@ def _stations(args: argparse.Namespace) -> int:
     last_year = args.last_year or date.today().year - 1
     pollutant = stations.Pollutant(args.pollutant)
     print(stations.build(args.country, pollutant, Path(args.out), last_year=last_year))
+    return 0
+
+
+def _live_stations(args: argparse.Namespace) -> int:
+    yesterday = date.fromordinal(date.today().toordinal() - 1)
+    first = date.fromisoformat(args.first_day) if args.first_day else yesterday
+    last = date.fromisoformat(args.last_day) if args.last_day else first
+    countries = args.countries.split(",") if args.countries else None
+    pollutant = stations.Pollutant(args.pollutant)
+    out = Path(args.out)
+    for path in live_stations.build(pollutant, first, last, out, countries=countries):
+        print(path)
+    return 0
+
+
+def _live_compare(args: argparse.Namespace) -> int:
+    locations = [int(x) for x in Path(args.locations).read_text().replace(",", " ").split()]
+    folder = Path(args.validated)
+    validated = {
+        pollutant: live_compare.read_validated(
+            sorted(folder.glob(f"stations-*-{pollutant}.parquet"))
+        )
+        for pollutant in live_stations.POLLUTANTS
+        if any(folder.glob(f"stations-*-{pollutant}.parquet"))
+    }
+    result = live_compare.compare(locations, args.year, validated)
+    Path(args.out).write_text(json.dumps(result, indent=1))
+    print(live_compare.markdown(result))
     return 0
 
 
@@ -469,6 +500,27 @@ def _parser() -> argparse.ArgumentParser:
     stationing.add_argument("--last-year", type=int, help="the last year kept (default: last year)")
     stationing.add_argument("--out", default="dist", help="where the asset is written")
     stationing.set_defaults(run=_stations)
+
+    living = commands.add_parser(
+        "live-stations", help="build days of daily values at Europe's stations, from the EEA (E2a)"
+    )
+    living.add_argument(
+        "--pollutant", required=True, choices=[p.value for p in live_stations.POLLUTANTS]
+    )
+    living.add_argument("--first-day", help="the first UTC day, ISO (default: yesterday)")
+    living.add_argument("--last-day", help="the last UTC day, ISO (default: the first)")
+    living.add_argument("--countries", help="two-letter codes, e.g. FR,DE (default: every one)")
+    living.add_argument("--out", default="dist", help="where the assets are written")
+    living.set_defaults(run=_live_stations)
+
+    comparing = commands.add_parser(
+        "live-compare", help="score OpenAQ's archive of the EEA's live hours against validated days"
+    )
+    comparing.add_argument("--year", type=int, required=True, help="the year compared")
+    comparing.add_argument("--locations", required=True, help="a file of OpenAQ location ids")
+    comparing.add_argument("--validated", required=True, help="a folder of validated assets")
+    comparing.add_argument("--out", default="compare.json", help="the scores, as JSON")
+    comparing.set_defaults(run=_live_compare)
 
     targeting = commands.add_parser(
         "targets", help="build the measured sources of carbonaceous aerosol, from Zenodo"
