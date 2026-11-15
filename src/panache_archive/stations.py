@@ -75,6 +75,8 @@ VALUE_DECIMALS: Final = 2
 logger = logging.getLogger(__name__)
 
 type Read = Callable[[urllib.request.Request | str], bytes]
+type Screen = Callable[[NDArray[np.datetime64], NDArray[np.float64]], NDArray[np.bool_]]
+"""Which of a point's values to keep, given their UTC start times (ascending) and values."""
 
 
 class Pollutant(StrEnum):
@@ -153,10 +155,16 @@ class PointDays:
 
 
 def list_files(
-    country: str, pollutant: Pollutant, years: Iterable[int], *, read: Read = web.read
+    country: str,
+    pollutant: Pollutant,
+    years: Iterable[int],
+    *,
+    read: Read = web.read,
+    dataset: int = VALIDATED,
 ) -> list[str]:
-    """The files the service lists for `country` and `pollutant`, over each of `years`: those of
-    hourly values, and of daily ones for a pollutant whose statistic they can give."""
+    """The files the service lists for `country` and `pollutant` in `dataset`, over each of
+    `years`: those of hourly values, and of daily ones for a pollutant whose statistic they can
+    give."""
     found: set[str] = set()
     aggregations = (HOURLY,) if pollutant.statistic == MAX_8H_MEAN else (HOURLY, DAILY)
     for year in years:
@@ -165,7 +173,7 @@ def list_files(
                 "countries": [country],
                 "cities": [],
                 "pollutants": [pollutant.notation],
-                "dataset": VALIDATED,
+                "dataset": dataset,
                 "source": "API",
                 "dateTimeStart": f"{year}-01-01T00:00:00Z",
                 "dateTimeEnd": f"{year + 1}-01-01T00:00:00Z",
@@ -186,12 +194,13 @@ def list_files(
     return sorted(found)
 
 
-def daily_means(content: bytes, statistic: str = MEAN) -> PointDays:
+def daily_means(content: bytes, statistic: str = MEAN, screen: Screen | None = None) -> PointDays:
     """A file's daily values: each UTC day's mean, from at least `MIN_HOURS` valid hours, or its
     maximum 8-hour mean (`MAX_8H_MEAN`), from enough valid 8-hour means (`daily`). A mean's days
     without enough hours take the value the file reports for the day, if any.
 
-    An hour the file holds twice counts once, with its first value.
+    An hour the file holds twice counts once, with its first value. `screen`, when given, drops
+    the hours and the reported days' values it does not keep, before any statistic.
     """
     table = pq.read_table(
         io.BytesIO(content),
@@ -214,6 +223,29 @@ def daily_means(content: bytes, statistic: str = MEAN) -> PointDays:
     keep = valid & (aggregation == HOURLY)
     hours, first = np.unique(starts[keep], return_index=True)
     hourly = values[keep][first]
+    if screen is not None:
+        kept = screen(hours, hourly)
+        hours, hourly = hours[kept], hourly[kept]
+    from_hours = statistic_of_hours(sampling_point, hours, hourly, statistic)
+    if statistic == MAX_8H_MEAN:
+        return from_hours
+    reported = valid & (aggregation == DAILY)
+    named = (starts[reported] + FILE_HOURS_AHEAD_OF_UTC).astype("datetime64[D]")
+    daily = values[reported]
+    if screen is not None:
+        kept = screen(starts[reported], daily)
+        named, daily = named[kept], daily[kept]
+    return _with_reported_days(from_hours, named, daily)
+
+
+def statistic_of_hours(
+    sampling_point: str,
+    hours: NDArray[np.datetime64],
+    hourly: NDArray[np.float64],
+    statistic: str = MEAN,
+) -> PointDays:
+    """The daily values of a point's distinct UTC `hours` (ascending): each day's mean, from at
+    least `MIN_HOURS` hours, or its maximum 8-hour mean (`MAX_8H_MEAN`)."""
     days, index, counts = np.unique(
         hours.astype("datetime64[D]"), return_inverse=True, return_counts=True
     )
@@ -223,15 +255,12 @@ def daily_means(content: bytes, statistic: str = MEAN) -> PointDays:
         raise ValueError(f"no daily statistic {statistic!r}")
     sums = np.bincount(index, weights=hourly, minlength=days.size)
     full = counts >= MIN_HOURS
-    from_hours = PointDays(
+    return PointDays(
         sampling_point=sampling_point,
         days=days[full],
         means=sums[full] / counts[full],
         hours=counts[full].astype(np.int64),
     )
-    reported = valid & (aggregation == DAILY)
-    named = (starts[reported] + FILE_HOURS_AHEAD_OF_UTC).astype("datetime64[D]")
-    return _with_reported_days(from_hours, named, values[reported])
 
 
 def _with_reported_days(
