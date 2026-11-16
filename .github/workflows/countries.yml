@@ -1,0 +1,48 @@
+name: Countries
+
+# Each emission cell's country, for Panache's footprint shares by country (Panache's D86):
+# Natural Earth's admin 0 countries burnt by GDAL on cells ten times finer, each 0.1° cell
+# given the country holding most of its land, published as `countries.npz` in `emissions-v1`.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: countries
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: emissions-v1
+
+jobs:
+  build:
+    name: Each cell's country
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Install GDAL
+        run: sudo apt-get update -q && sudo apt-get install -y -q gdal-bin
+      - name: Burn the countries
+        run: scripts/countries.sh "$RUNNER_TEMP/countries"
+      - name: Build
+        run: |
+          uv run panache-archive countries --raster "$RUNNER_TEMP/countries/countries.tif" \
+            --geojson "$RUNNER_TEMP/countries/countries.geojson" --out dist | tee build.log
+          { echo '```'; cat build.log; echo '```'; du -k dist/countries.npz; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE" dist/countries.npz --clobber
+          gh release edit "$RELEASE" --notes-file docs/emissions-release.md

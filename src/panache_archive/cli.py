@@ -2,7 +2,8 @@
 `era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `live-stations`,
 `live-compare`, `targets`, `static`,
 `fine`, `fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build`,
-`surface-pilot`, `emissions-plan`, `emissions-build`, `emissions-pilot` and `edgar-build`, as
+`surface-pilot`, `emissions-plan`, `emissions-build`, `emissions-pilot`, `edgar-build` and
+`countries`, as
 the workflows run them."""
 
 import argparse
@@ -22,6 +23,7 @@ from huggingface_hub import HfApi
 from panache_archive import (
     ads,
     check,
+    countries,
     edgar,
     emissions,
     era5,
@@ -299,6 +301,14 @@ def _winds_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _countries(args: argparse.Namespace) -> int:
+    path = countries.build(Path(args.raster), Path(args.geojson), Path(args.out))
+    print(path)
+    for line in countries.describe(path):
+        print(line)
+    return 0
+
+
 def _edgar_build(args: argparse.Namespace) -> int:
     years = sorted(plan.parse_years(args.years) or range(edgar.FIRST_YEAR, edgar.LAST_YEAR + 1))
     for path in edgar.build(years, Path(args.out), Path(args.workdir)):
@@ -444,6 +454,14 @@ def _parser() -> argparse.ArgumentParser:
     edgar_building.add_argument("--out", default="dist", help="where the assets are written")
     edgar_building.add_argument("--workdir", default="work", help="where zips are downloaded")
     edgar_building.set_defaults(run=_edgar_build)
+
+    bordering = commands.add_parser(
+        "countries", help="build each emission cell's country (scripts/countries.sh's raster)"
+    )
+    bordering.add_argument("--raster", required=True, help="GDAL's raster of NE_IDs")
+    bordering.add_argument("--geojson", required=True, help="Natural Earth's countries")
+    bordering.add_argument("--out", default="dist", help="where the asset is written")
+    bordering.set_defaults(run=_countries)
 
     emissions_planning = commands.add_parser(
         "emissions-plan", help="print the species and years of CAMS-GLOB-ANT not built yet"

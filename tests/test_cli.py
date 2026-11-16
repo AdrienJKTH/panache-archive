@@ -389,6 +389,23 @@ def test_static_reads_gdals_four_cuts(
     assert capsys.readouterr().out.split()[0] == str(Path("dist") / "static.npz")
 
 
+def test_countries_builds_and_describes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked: list[tuple[Path, Path, Path]] = []
+
+    def build(raster: Path, geojson: Path, out: Path) -> Path:
+        asked.append((raster, geojson, out))
+        return out / "countries.npz"
+
+    monkeypatch.setattr("panache_archive.countries.build", build)
+    monkeypatch.setattr("panache_archive.countries.describe", lambda _: ["2 countries"])
+    code = cli.main(["countries", "--raster", "a.tif", "--geojson", "b.geojson", "--out", "d"])
+    assert code == 0
+    assert asked == [(Path("a.tif"), Path("b.geojson"), Path("d"))]
+    assert capsys.readouterr().out.splitlines() == [str(Path("d") / "countries.npz"), "2 countries"]
+
+
 def test_winds_commands(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

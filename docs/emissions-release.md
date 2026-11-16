@@ -11,3 +11,8 @@ CAMS's global anthropogenic emissions by sector over Europe and its surroundings
 - **Content**: yearly emissions of primary PM2.5, kg m⁻² s⁻¹, for the 20 sectors of EDGAR v8.1 emitted at or near the ground (aviation's climb, cruise and supersonic sectors are left out), on the same cells and tiles.
 - **Assets**: one per year, `emissions-edgar_pm25-2021.emissions`, 2013-2022. The same format, with one period a year and a scale of 1e10, both written in the header.
 - **Source and use conditions**: EDGAR v8.1 Global Air Pollutant Emissions (Crippa et al. 2024), European Commission, Joint Research Centre, https://edgar.jrc.ec.europa.eu/dataset_ap81. Reuse is authorised provided the source is acknowledged (the European Commission's reuse notice). Cut to the box and rounded to float16; otherwise unchanged.
+
+**Each cell's country**
+
+- **Content**: `countries.npz`, the country holding most of each 0.1° cell's land (code 0: the sea, or land Natural Earth misses), on the same cells: `code` (uint16, rows from the south), `iso` (ADM0_A3) and `name` by code, and the grid's first cell centre and step.
+- **Source**: Natural Earth 1:10m admin 0 countries, v5.1.2 (public domain), burnt by GDAL on cells ten times finer (`scripts/countries.sh`, the `Countries` workflow).
