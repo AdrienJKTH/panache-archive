@@ -23,6 +23,10 @@ on:
       panache:
         description: "The commit, branch or tag of AdrienJKTH/panache the experiment runs"
         default: main
+      fine:
+        description: "Judge each target with the ~100 m layers too (fine-europe-*-v1, ~1.5 GB)"
+        type: boolean
+        default: false
   pull_request:
     types: [labeled]
 
@@ -141,11 +145,24 @@ jobs:
         run: >
           gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir static
           --pattern "static-europe-1km.npz"
+      - name: Fetch the fine layers
+        if: inputs.fine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for release in fine-europe-west-v1 fine-europe-east-v1; do
+            gh release download "$release" --repo "$GITHUB_REPOSITORY" --dir fine \
+              --pattern "fine-*.npz"
+          done
+          echo "$(ls fine | wc -l) tiles"
       - name: Experiment
+        env:
+          FINE: ${{ inputs.fine && '--fine fine' || '' }}
         run: |
           mkdir -p out
+          # shellcheck disable=SC2086 # FINE is either empty or two words
           /tmp/panache/bin/panache-combustion-experiment --inputs inputs \
-            --static static/static-europe-1km.npz --tracers --out out/combustion.json \
+            --static static/static-europe-1km.npz --tracers $FINE --out out/combustion.json \
             | tee out/combustion.md
           cat out/combustion.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
