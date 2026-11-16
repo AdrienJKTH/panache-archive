@@ -159,6 +159,7 @@ jobs:
         env:
           FINE: ${{ inputs.fine && '--fine fine' || '' }}
         run: |
+          set -o pipefail  # a failed experiment fails the step, not hidden by tee
           mkdir -p out
           # shellcheck disable=SC2086 # FINE is either empty or two words
           /tmp/panache/bin/panache-combustion-experiment --inputs inputs \
