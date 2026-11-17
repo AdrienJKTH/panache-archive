@@ -18,6 +18,9 @@ on:
       methods:
         description: "The foundation models, as a JSON list"
         default: '["chronos2", "tabpfn_ts"]'
+      history:
+        description: "The past each forecast knows: reanalysis, or stream (CAMS's, as live)"
+        default: reanalysis
       every:
         description: "One issue day in this many"
         default: "1"
@@ -51,9 +54,10 @@ jobs:
           METHOD: ${{ matrix.method }}
           COUNTRY: ${{ matrix.country }}
           EVERY: ${{ inputs.every }}
+          HISTORY: ${{ inputs.history }}
         run: |
           uv run --script experiments/forecast_foundation.py --data inputs/forecast-experiment.parquet \
-            --method "$METHOD" --country "$COUNTRY" --every "$EVERY" \
+            --method "$METHOD" --country "$COUNTRY" --every "$EVERY" --history "$HISTORY" \
             --out "out/$METHOD-$COUNTRY.parquet" 2>&1 | tee forecast.log
           grep -E "issue days|forecasts in" forecast.log >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -109,15 +113,19 @@ jobs:
               pq.write_table(pa.concat_tables(tables), "foundation-forecasts.parquet")
           EOF
       - name: Score
+        env:
+          HISTORY: ${{ inputs.history }}
         run: |
           set -o pipefail
           mkdir -p out
           foundation=()
           [ -f foundation-forecasts.parquet ] && foundation=(--foundation foundation-forecasts.parquet)
           /tmp/panache/bin/panache-forecast-experiment run --data inputs/forecast-experiment.parquet \
-            "${foundation[@]}" --out out/forecast-scores.json | tee out/forecast-scores.md
-          cat out/forecast-scores.md >> "$GITHUB_STEP_SUMMARY"
-          [ -f foundation-forecasts.parquet ] && cp foundation-forecasts.parquet out/ || true
+            "${foundation[@]}" --history "$HISTORY" --out "out/forecast-scores-$HISTORY.json" \
+            | tee "out/forecast-scores-$HISTORY.md"
+          cat "out/forecast-scores-$HISTORY.md" >> "$GITHUB_STEP_SUMMARY"
+          [ -f foundation-forecasts.parquet ] \
+            && cp foundation-forecasts.parquet "out/foundation-forecasts-$HISTORY.parquet" || true
       - name: Publish the scores
         env:
           GH_TOKEN: ${{ github.token }}
