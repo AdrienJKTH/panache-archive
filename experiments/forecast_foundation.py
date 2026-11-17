@@ -126,7 +126,9 @@ def covariates(columns: dict[str, np.ndarray]) -> np.ndarray:
     )
 
 
-def places(path: Path, country: str) -> list[Place]:
+def places(path: Path, country: str, history: str = "reanalysis") -> list[Place]:
+    """The country's places; with `history` `stream`, the past each forecast knows is
+    CAMS's stream where it exists, as a live forecast's (Panache's D96)."""
     table = pq.read_table(path).filter(pc.field("country") == country)
     frame = table.to_pandas()
     out = []
@@ -140,7 +142,11 @@ def places(path: Path, country: str) -> list[Place]:
                 for lead in range(HORIZON)
             ]
         )
-        log_pm = np.log(rows["pm2_5"].to_numpy(float) + FLOOR)
+        pm = rows["pm2_5"].to_numpy(float)
+        if history == "stream":
+            stream = rows["pm2_5_stream"].to_numpy(float)
+            pm = np.where(np.isfinite(stream), stream, pm)
+        log_pm = np.log(pm + FLOOR)
         out.append(Place(str(name), first, log_pm, era5, runs))
     if not out:
         raise SystemExit(f"no place of {country} in {path}")
@@ -277,9 +283,15 @@ def main() -> int:
     parser.add_argument("--method", choices=("chronos2", "tabpfn_ts"), required=True)
     parser.add_argument("--country", required=True, help="the country whose places to forecast")
     parser.add_argument("--every", type=int, default=1, help="one issue day in this many")
+    parser.add_argument(
+        "--history",
+        choices=("reanalysis", "stream"),
+        default="reanalysis",
+        help="the past each forecast knows: the reanalysis, or CAMS's stream where it exists",
+    )
     parser.add_argument("--out", type=Path, required=True, help="the forecasts, as Parquet")
     args = parser.parse_args()
-    selected = issues(places(args.data, args.country), args.every)
+    selected = issues(places(args.data, args.country, args.history), args.every)
     logger.info("%s: %d issue days in %s", args.method, len(selected), args.country)
     started = time.monotonic()
     forecast = chronos if args.method == "chronos2" else tabpfn
