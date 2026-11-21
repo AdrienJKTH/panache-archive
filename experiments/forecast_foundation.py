@@ -128,7 +128,7 @@ def covariates(columns: dict[str, np.ndarray]) -> np.ndarray:
 
 def places(path: Path, country: str, history: str = "reanalysis") -> list[Place]:
     """The country's places; with `history` `stream`, the past each forecast knows is
-    CAMS's stream where it exists, as a live forecast's (Panache's D96)."""
+    CAMS's stream where it exists, as a live forecast's (Panache's D98)."""
     table = pq.read_table(path).filter(pc.field("country") == country)
     frame = table.to_pandas()
     out = []
