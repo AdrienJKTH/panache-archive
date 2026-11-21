@@ -224,9 +224,18 @@ jobs:
             --pattern "ri-urbans-ebc.parquet"
           gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs \
             --pattern "stations-*-pm2_5.parquet"
+          # Artifact downloads can be refused for a while (HTTP 503, "Egress is over the account
+          # limit", run 44185600581): three tries, five minutes apart, each from an empty folder.
           for run in $ROWS_RUN; do
-            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern "rows-*" \
-              --dir "rows/$run"
+            for attempt in 1 2 3; do
+              rm -rf "rows/$run"
+              if gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern "rows-*" \
+                --dir "rows/$run"; then
+                break
+              fi
+              [ "$attempt" = 3 ] && exit 1
+              sleep 300
+            done
           done
           find rows -name "*.jsonl" | wc -l
       - name: Report
