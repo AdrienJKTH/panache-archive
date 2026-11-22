@@ -17,9 +17,14 @@ name: Live innovations
 # `first_day` to `last_day` (default: the three days before today, the days `Live stations`
 # rebuilds each morning), a later build of a day replacing the earlier one.
 #
-# Dispatch only for now: a daily schedule, after `Live stations`', waits for Adrien.
+# Each morning once `Live stations` has succeeded (Adrien's go, 2026-11-22), with the defaults
+# above; by hand for a seed or other days.
 
 on:
+  workflow_run:
+    workflows: ["Live stations"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       panache:
@@ -56,6 +61,7 @@ defaults:
 jobs:
   build:
     name: Build ${{ matrix.pollutant }}
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
