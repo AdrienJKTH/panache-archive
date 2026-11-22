@@ -12,9 +12,14 @@ name: Live analysis
 #   1° grid, then `analysed.json`, which names them; `first_day` starts a first publication;
 # - `check`: D90's scores again over `first_day` to `last_day`, stations held out by 0.5° block.
 #
-# Dispatch only for now: a daily schedule, after `Live innovations`', waits for Adrien.
+# `analyse` each morning once `Live innovations` has succeeded (Adrien's go, 2026-11-22); the
+# other commands by hand.
 
 on:
+  workflow_run:
+    workflows: ["Live innovations"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       panache:
@@ -51,11 +56,12 @@ defaults:
 
 jobs:
   run:
-    name: ${{ inputs.command }}
+    name: ${{ inputs.command || 'analyse' }}
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
-      COMMAND: ${{ inputs.command }}
+      COMMAND: ${{ inputs.command || 'analyse' }}
       FIRST: ${{ inputs.first_day }}
       LAST: ${{ inputs.last_day }}
     steps:
@@ -103,7 +109,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: live-analysis-${{ inputs.command }}
+          name: live-analysis-${{ inputs.command || 'analyse' }}
           path: |
             dist/*
             *.jsonl
