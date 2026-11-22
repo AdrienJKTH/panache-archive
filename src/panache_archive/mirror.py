@@ -3,7 +3,9 @@
 Panache reads the whole domain's assets from GitHub's release `cams-europe-v1`, and from their
 mirror on Hugging Face when GitHub fails: the public dataset `adrien4916/air_qual_indicators`,
 folder `cams-europe-v1`. The `Mirror` workflow keeps the folder equal to the release:
-- an asset missing from the mirror, or of another size or SHA-256, is uploaded again;
+- an asset missing from the mirror, or of another size or SHA-256, is uploaded again; a small
+  file outside LFS has no SHA-256 on Hugging Face, so it is downloaded and compared by its git
+  blob id (a pointer such as `maps-live-v1/live.json` keeps its size from run to run);
 - a file the release no longer holds (an interim year replaced by its validated twin) is deleted;
 - the dataset card (`README.md`) follows `docs/hugging-face-card.md`;
 - the parts of a year being built (`downscaled-<pollutant>-<year>-part<k>.days`, Panache's D79)
@@ -22,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -52,6 +54,8 @@ class Asset:
     sha256: str | None = None
     url: str = ""
     """Where GitHub serves it (release assets only)."""
+    blob_id: str | None = None
+    """The git blob id of a mirrored file kept outside LFS (it has no SHA-256 there)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,13 +143,14 @@ def sync(
     """Bring the mirror's `folder` in line with `release`, and its card; returns what was done."""
     mirrored, card_blob = hub.files(folder)
     todo = plan(release, mirrored, card, card_blob)
+    workdir.mkdir(parents=True, exist_ok=True)
+    todo = replace(todo, upload=_changed(todo.upload, mirrored, workdir, download))
     if todo.card or todo.delete:
         hub.commit(
             {CARD: card} if todo.card else {},
             [f"{folder}/{name}" for name in todo.delete],
             f"Mirror {folder}: the card, and {len(todo.delete)} assets the release dropped",
         )
-    workdir.mkdir(parents=True, exist_ok=True)
     for group in batches(todo.upload):
         paths: dict[str, Path | bytes] = {}
         for asset in group:
@@ -204,7 +209,12 @@ class HubApi:
         entries = list(self._api.list_repo_tree(self._repo_id, repo_type="dataset", recursive=True))
         files = [e for e in entries if isinstance(e, RepoFile)]
         mirrored = [
-            Asset(e.path.removeprefix(f"{folder}/"), e.size, e.lfs.sha256 if e.lfs else None)
+            Asset(
+                e.path.removeprefix(f"{folder}/"),
+                e.size,
+                e.lfs.sha256 if e.lfs else None,
+                blob_id=None if e.lfs else e.blob_id,
+            )
             for e in files
             if e.path.startswith(f"{folder}/")
         ]
@@ -227,9 +237,31 @@ class HubApi:
         )
 
 
+def _changed(
+    candidates: Sequence[Asset], mirrored: Sequence[Asset], workdir: Path, download: Download
+) -> tuple[Asset, ...]:
+    """The candidates that really differ: a small file outside LFS, of the mirror's size, is
+    downloaded and compared with the mirror's blob id."""
+    there = {a.name: a for a in mirrored}
+    changed = []
+    for asset in candidates:
+        twin = there.get(asset.name)
+        if twin is not None and twin.blob_id is not None and twin.size == asset.size:
+            target = workdir / asset.name
+            download(asset, target)
+            same = git_blob_id(target.read_bytes()) == twin.blob_id
+            target.unlink()
+            if same:
+                continue
+        changed.append(asset)
+    return tuple(changed)
+
+
 def _same(asset: Asset, mirrored: Asset) -> bool:
     if asset.size != mirrored.size:
         return False
+    if mirrored.blob_id is not None:
+        return False  # its content decides, see `_changed`
     return asset.sha256 is None or mirrored.sha256 is None or asset.sha256 == mirrored.sha256
 
 

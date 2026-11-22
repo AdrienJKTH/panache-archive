@@ -100,6 +100,25 @@ def test_a_digest_decides_when_both_sides_have_one(
     assert todo.card  # no card on the mirror yet
 
 
+def test_a_small_file_outside_lfs_is_compared_by_its_content(tmp_path: Path) -> None:
+    old, new = b'{"run": "8"}', b'{"run": "9"}'  # same size, as live.json's pointers are
+    release = [_asset("live.json", new), _asset("same.json", old)]
+    on_hub = [
+        Asset("live.json", len(old), blob_id=git_blob_id(old)),
+        Asset("same.json", len(old), blob_id=git_blob_id(old)),
+    ]
+    contents = {"live.json": new, "same.json": old}
+    hub = FakeHub(on_hub, git_blob_id(CARD))
+
+    def download(asset: Asset, target: Path) -> None:
+        target.write_bytes(contents[asset.name])
+
+    done = mirror.sync(hub, release, CARD, tmp_path, download)
+
+    assert [a.name for a in done.upload] == ["live.json"]
+    assert hub.commits == [({"cams-europe-v1/live.json": new}, [], hub.commits[0][2])]
+
+
 def test_the_parts_of_a_year_being_built_are_never_mirrored() -> None:
     part = Asset("downscaled-pm10-2018-part2.days", 9, "p")
     year = Asset("downscaled-pm10-2019.days", 9, "y")
@@ -239,6 +258,7 @@ class FakeHfApi:
         return [
             _file(path="README.md", size=10, oid="cardblob"),
             _file(path=".gitattributes", size=2, oid="x"),
+            _file(path="cams-europe-v1/live.json", size=4, oid="blob"),
             _file(
                 path="cams-europe-v1/a.cells",
                 size=3,
@@ -264,7 +284,7 @@ def test_the_hub_lists_the_folder_and_commits_through_huggingface_hub(
     files, card = hub.files("cams-europe-v1")
     hub.commit({"README.md": CARD, "cams-europe-v1/a.cells": path}, ["cams-europe-v1/b.cells"], "m")
 
-    assert files == [Asset("a.cells", 3, "abc")]
+    assert files == [Asset("live.json", 4, blob_id="blob"), Asset("a.cells", 3, "abc")]
     assert card == "cardblob"
     api = cast("FakeHfApi", hub._api)
     ((repo, operations, message, kind),) = api.commits
