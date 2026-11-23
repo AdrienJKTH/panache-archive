@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, Final, Protocol
 
-from huggingface_hub import CommitOperationAdd, HfApi
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError
 from huggingface_hub.hf_api import RepoFile
 
@@ -73,6 +73,48 @@ class Api(Protocol):
     def hf_hub_download(
         self, repo_id: str, filename: str, *, repo_type: str, local_dir: str
     ) -> str: ...
+
+
+class PublicApi(Protocol):
+    """What `purge_public` needs of `huggingface_hub.HfApi` (or a fake)."""
+
+    def list_repo_tree(self, repo_id: str, *, repo_type: str, recursive: bool) -> Iterable[Any]: ...
+
+    def create_commit(
+        self,
+        repo_id: str,
+        operations: Sequence[CommitOperationDelete],
+        *,
+        commit_message: str,
+        repo_type: str,
+    ) -> Any: ...
+
+    def super_squash_history(self, repo_id: str, *, repo_type: str) -> Any: ...
+
+
+def purge_public(api: PublicApi, repo_id: str, *, squash: bool) -> list[str]:
+    """Deletes from the public dataset `repo_id` (one folder per release) every file that
+    `is_private` says never belonged there, and returns their paths. With `squash`, its history
+    is squashed into one commit afterwards, so that no old revision keeps them (irreversible)."""
+    if repo_id == REPO_ID:
+        raise ValueError(f"{repo_id} is the private dataset")
+    leaks = sorted(
+        entry.path
+        for entry in api.list_repo_tree(repo_id, repo_type="dataset", recursive=True)
+        if isinstance(entry, RepoFile)
+        and "/" in entry.path
+        and is_private(entry.path.split("/", 1)[0], entry.path.rsplit("/", 1)[1])
+    )
+    if leaks:
+        api.create_commit(
+            repo_id,
+            [CommitOperationDelete(path_in_repo=path) for path in leaks],
+            commit_message=f"Remove {len(leaks)} private files",
+            repo_type="dataset",
+        )
+    if squash:
+        api.super_squash_history(repo_id, repo_type="dataset")
+    return leaks
 
 
 class PrivateStore:

@@ -1,0 +1,45 @@
+name: Purge the public copies
+
+# One-off (Panache's D114, Adrien's yes of 2026-11-23): once Panache reads the private dataset
+# (`panache_archive.private`), deletes the models and the experiment's results from the public
+# releases and from the public dataset, and squashes the dataset's history so that no old revision
+# keeps them. Irreversible. The private copies were compared first, by name and size.
+
+on:
+  workflow_dispatch:
+
+# Not at the same time as the mirror, which commits to the same dataset.
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  purge:
+    name: Purge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Delete them from the public releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for release in forecast-models-v1 forecast-experiment-v1; do
+            gh release delete "$release" --cleanup-tag --yes
+          done
+          for release in downscaled-v1 downscaled-europe-v1 downscaled-towns-v1; do
+            for asset in $(gh release view "$release" --json assets \
+                --jq '.assets[].name | select(endswith(".lgb.txt"))'); do
+              gh release delete-asset "$release" "$asset" --yes
+            done
+          done
+      - name: Delete them from the public dataset, and squash its history
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private purge-public --squash | tee -a "$GITHUB_STEP_SUMMARY"

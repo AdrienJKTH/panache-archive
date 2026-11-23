@@ -224,3 +224,89 @@ def test_download_may_find_nothing(tmp_path: Path) -> None:
     api = FakeApi({"a-v1/x.txt": b"1"})
 
     assert _store(api).download("a-v1", "*.parquet", tmp_path) == []
+
+
+class FakePublicApi:
+    def __init__(self, paths: list[str]) -> None:
+        self.paths = paths
+        self.deleted: list[str] = []
+        self.squashed = 0
+
+    def list_repo_tree(self, repo_id: str, *, repo_type: str, recursive: bool) -> list[object]:
+        assert (repo_id, repo_type, recursive) == ("public/dataset", "dataset", True)
+        return [
+            RepoFile(path=path, size=1, oid="x")  # type: ignore[no-untyped-call]
+            for path in self.paths
+        ]
+
+    def create_commit(
+        self, repo_id: str, operations: Sequence[Any], *, commit_message: str, repo_type: str
+    ) -> None:
+        assert (repo_id, repo_type) == ("public/dataset", "dataset")
+        self.deleted += [o.path_in_repo for o in operations]
+        assert commit_message == f"Remove {len(operations)} private files"
+
+    def super_squash_history(self, repo_id: str, *, repo_type: str) -> None:
+        assert (repo_id, repo_type) == ("public/dataset", "dataset")
+        self.squashed += 1
+
+
+PUBLIC = [
+    "README.md",
+    "cams-europe-v1/cams-pm10-2021-validated.cells",
+    "downscaled-europe-v1/downscaled-ozone-2021.days",
+    "downscaled-europe-v1/downscaling-ozone.lgb.txt",
+    "downscaled-towns-v1/downscaling-fine-nitrogen_dioxide.lgb.txt",
+    "forecast-experiment-v1/forecast-scores.md",
+    "forecast-models-v1/lightgbm-j1.txt",
+]
+
+
+def test_purge_removes_the_private_files_and_squashes_the_history() -> None:
+    api = FakePublicApi(PUBLIC)
+
+    removed = private.purge_public(api, "public/dataset", squash=True)
+
+    assert (
+        removed
+        == api.deleted
+        == [
+            "downscaled-europe-v1/downscaling-ozone.lgb.txt",
+            "downscaled-towns-v1/downscaling-fine-nitrogen_dioxide.lgb.txt",
+            "forecast-experiment-v1/forecast-scores.md",
+            "forecast-models-v1/lightgbm-j1.txt",
+        ]
+    )
+    assert api.squashed == 1
+
+
+def test_purge_without_leaks_commits_nothing_and_keeps_the_history_unless_asked() -> None:
+    api = FakePublicApi(PUBLIC[:3])
+
+    assert private.purge_public(api, "public/dataset", squash=False) == []
+    assert (api.deleted, api.squashed) == ([], 0)
+
+
+def test_purge_never_touches_the_private_dataset() -> None:
+    with pytest.raises(ValueError, match="private"):
+        private.purge_public(FakePublicApi([]), private.REPO_ID, squash=True)
+
+
+def test_the_purge_command_reports_what_it_removed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakePublicApi(PUBLIC)
+    api_class = lambda **_: api  # noqa: E731
+    monkeypatch.setenv("HF_TOKEN", "token")
+    monkeypatch.setattr(cli, "HfApi", api_class)
+    monkeypatch.setattr(mirror, "REPO_ID", "public/dataset")
+
+    assert cli.main(["private", "purge-public", "--squash"]) == 0
+
+    out = capsys.readouterr().out
+    assert "4 private files removed from public/dataset" in out
+    assert "forecast-models-v1/lightgbm-j1.txt" in out
+    assert "history squashed" in out
+    monkeypatch.delenv("HF_TOKEN")
+    with pytest.raises(SystemExit, match="HF_TOKEN"):
+        cli.main(["private", "purge-public"])

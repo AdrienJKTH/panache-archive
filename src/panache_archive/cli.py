@@ -233,6 +233,18 @@ def _private_download(args: argparse.Namespace) -> int:
     return 0 if found or args.allow_empty else 1
 
 
+def _private_purge(args: argparse.Namespace) -> int:
+    token = os.environ.get("HF_TOKEN", "")
+    if not token:
+        raise SystemExit("HF_TOKEN is not set: Hugging Face would refuse the commits")
+    removed = private.purge_public(HfApi(token=token), mirror.REPO_ID, squash=args.squash)
+    print(f"{len(removed)} private files removed from {mirror.REPO_ID}")
+    for path in removed:
+        print(path)
+    print("history squashed" if args.squash else "history kept")
+    return 0
+
+
 def _stations(args: argparse.Namespace) -> int:
     last_year = args.last_year or date.today().year - 1
     pollutant = stations.Pollutant(args.pollutant)
@@ -558,6 +570,14 @@ def _parser() -> argparse.ArgumentParser:
         "--allow-empty", action="store_true", help="succeed when no file matches"
     )
     private_download.set_defaults(run=_private_download)
+
+    private_purge = privately.add_parser(
+        "purge-public", help="remove from the public dataset what must never be there"
+    )
+    private_purge.add_argument(
+        "--squash", action="store_true", help="then squash its history (irreversible)"
+    )
+    private_purge.set_defaults(run=_private_purge)
 
     stationing = commands.add_parser(
         "stations", help="build a country's daily means at its stations, from the EEA (E1a)"
