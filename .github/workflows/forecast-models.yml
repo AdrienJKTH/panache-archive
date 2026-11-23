@@ -52,6 +52,7 @@ jobs:
         run: |
           # The held-out scores and the analogs' weights are the model's: into the private
           # dataset with it, not into the public log or summary.
+          mkdir -p out
           /tmp/panache/bin/panache-forecast-experiment train \
             --data inputs/forecast-experiment.parquet --out out > out/summary.md
           echo "Trained: $(ls out/lightgbm-j*.txt | wc -l) boosters" >> "$GITHUB_STEP_SUMMARY"
