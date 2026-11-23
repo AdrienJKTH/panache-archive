@@ -154,7 +154,8 @@ Panache's map colourings over the whole CAMS Europe domain (Panache's D78), ever
 
 - `eaqi`: the EAQI band of the day's worst pollutant, 1 to 6;
 - `unusual`: the most unusual of PM2.5, PM10 and ozone's 8-hour maximum for the season, 1 (up to p5) to 7 (p99 or more);
-- `causes`: the leading mechanism of Panache's verdict on the cell's day, 3 to 12; 1 not in an episode, 2 none standing out.
+- `causes`: the leading mechanism of Panache's verdict on the cell's day, 3 to 12; 1 not in an episode, 2 none standing out;
+- `pm2_5`, `pm10`, `nitrogen_dioxide`, `ozone`: a pollutant's own EAQI band, 1 to 6 (Panache's D117).
 
 0 means no class. Each file's JSON counts each day's cells per class.
 
@@ -164,11 +165,12 @@ Panache's map colourings over the whole CAMS Europe domain (Panache's D78), ever
 ```bash
 gh workflow run maps.yml -f panache=main -f pilot=6 -f years=2021
 gh workflow run maps.yml -f panache=main -f years=all
+gh workflow run maps.yml -f panache=main -f years=all -f layers=pollutants
 ```
 
 ## Live maps
 
-Panache's map of today and the next days (Panache's D80), in the release `maps-live-v1`: one `map-eaqi-run-<day>.days` file a run, ~30 KB, holding the EAQI bands of its four whole UTC days; one `map-eaqi-stream-<year>-to-<day>.days` file for the days between the archive and the run, ~2 MB a year, from CAMS's daily stream; then `live.json`, which names them. These are CAMS's forecasts, not the reanalysis.
+Panache's map of today and the next days (Panache's D80), in the release `maps-live-v1`: one `map-<layer>-run-<day>.days` file a run and layer, ~30 KB, holding its four whole UTC days; one `map-<layer>-stream-<year>-to-<day>.days` file for the days between the archive and the run, ~2 MB a year, from CAMS's daily stream; then `live.json`, which names them. These are CAMS's forecasts, not the reanalysis.
 
 - The [`Live maps`](.github/workflows/live.yml) workflow reads CAMS Europe's daily run from Open-Meteo's public bucket, ~50 MB, out about 11:35 UTC, with no account and no quota, and classes it by Panache's own rules (`panache-domain-maps live`).
 - It starts every hour, since GitHub's cron is late by hours or skips starts at times (on 2026-11-08, the 12:05 start had not come by 12:45). Each start writes only what changed (`panache-domain-maps live`), so a start with nothing new publishes nothing.
