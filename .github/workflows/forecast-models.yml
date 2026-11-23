@@ -5,7 +5,9 @@ name: Forecast models
 # the quantiles of the errors of the country-held-out run on March 2024 to December 2025, the
 # archived IFS runs as the forecast (`panache-forecast-experiment train`).
 #
-# The input table is the release `forecast-experiment-v1`'s; the models go to `forecast-models-v1`.
+# The input table is the private folder `forecast-experiment-v1`'s; the models go to the private
+# dataset's `forecast-models-v1` (`panache_archive.private`): never to a public release, nor to an
+# artifact, nor to the log.
 on:
   workflow_dispatch:
     inputs:
@@ -18,15 +20,13 @@ permissions:
 
 env:
   SOURCE: forecast-experiment-v1
-  RELEASE: forecast-models-v1
+  RELEASE: forecast-models-v1  # a folder of the private dataset
 
 jobs:
   train:
     name: Train
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -42,29 +42,22 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Fetch the table
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "$SOURCE" --pattern forecast-experiment.parquet --dir inputs
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private download --folder "$SOURCE" --pattern forecast-experiment.parquet --dir inputs
       - name: Train
         run: |
-          set -o pipefail
+          # The held-out scores and the analogs' weights are the model's: into the private
+          # dataset with it, not into the public log or summary.
+          mkdir -p out
           /tmp/panache/bin/panache-forecast-experiment train \
-            --data inputs/forecast-experiment.parquet --out out | tee summary.md
-          cat summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Publish the models
+            --data inputs/forecast-experiment.parquet --out out > out/summary.md
+          echo "Trained: $(ls out/lightgbm-j*.txt | wc -l) boosters" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the models, privately
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" \
-              --title "Panache's PM2.5 forecast models, J+1 to J+7" \
-              --notes-file docs/forecast-models-release.md --latest=false
-          # The boosters first: the manifest names them.
-          gh release upload "$RELEASE" out/lightgbm-j*.txt --clobber
-          gh release upload "$RELEASE" out/forecast-models.json --clobber
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: forecast-models
-          path: out/
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: >
+          uv run panache-archive private upload --folder "$RELEASE" out/lightgbm-j*.txt out/forecast-models.json out/summary.md

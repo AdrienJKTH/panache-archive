@@ -1,6 +1,6 @@
 """Command line: `panache-archive plan`, `build`, `check`, `supervise`, `era5-plan`,
 `era5-build`, `merra2-plan`, `merra2-build`, `mirror`, `stations`, `live-stations`,
-`live-compare`, `targets`, `static`,
+`live-compare`, `targets`, `static`, `private`,
 `fine`, `fine-plan`, `space`, `winds-plan`, `winds-build`, `surface-plan`, `surface-build`,
 `surface-pilot`, `emissions-plan`, `emissions-build`, `emissions-pilot`, `edgar-build` and
 `countries`, as
@@ -33,6 +33,7 @@ from panache_archive import (
     merra2,
     mirror,
     plan,
+    private,
     space,
     static,
     stations,
@@ -185,6 +186,9 @@ def _mirror(args: argparse.Namespace) -> int:
     if not token:
         print("HF_TOKEN is not set: Hugging Face would refuse the commits", file=sys.stderr)
         return 2
+    if private.is_private(args.folder):
+        print(f"{args.folder} is private: it is not mirrored on the public dataset")
+        return 0
     release = mirror.load_release(Path(args.release))
     card = Path(args.card).read_bytes()
     with tempfile.TemporaryDirectory(dir=args.workdir) as workdir:
@@ -201,6 +205,32 @@ def _mirror(args: argparse.Namespace) -> int:
         f"{len(done.delete)} deleted, the card {'written' if done.card else 'unchanged'}"
     )
     return 0
+
+
+def _private_store() -> private.PrivateStore:
+    token = os.environ.get("HF_TOKEN", "")
+    if not token:
+        raise SystemExit("HF_TOKEN is not set: Hugging Face would refuse the private dataset")
+    return private.PrivateStore(token)
+
+
+def _private_list(args: argparse.Namespace) -> int:
+    for name in _private_store().names(args.folder):
+        print(name)
+    return 0
+
+
+def _private_upload(args: argparse.Namespace) -> int:
+    files = [Path(name) for name in args.files]
+    _private_store().upload(args.folder, files)
+    print(f"{len(files)} files in the private dataset's {args.folder}")
+    return 0
+
+
+def _private_download(args: argparse.Namespace) -> int:
+    found = _private_store().download(args.folder, args.pattern, Path(args.dir))
+    print(f"{len(found)} files from the private dataset's {args.folder} in {args.dir}")
+    return 0 if found or args.allow_empty else 1
 
 
 def _stations(args: argparse.Namespace) -> int:
@@ -507,6 +537,27 @@ def _parser() -> argparse.ArgumentParser:
     mirroring.add_argument("--folder", default=mirror.FOLDER, help="the release's folder there")
     mirroring.add_argument("--workdir", help="where each batch of assets is downloaded")
     mirroring.set_defaults(run=_mirror)
+
+    privately = commands.add_parser(
+        "private", help="the private Hugging Face dataset of models and experiment results"
+    ).add_subparsers(dest="action", required=True)
+    private_list = privately.add_parser("list", help="the files of a folder, one a line")
+    private_list.add_argument("--folder", required=True, help="a release's name")
+    private_list.set_defaults(run=_private_list)
+    private_upload = privately.add_parser("upload", help="files into a folder, in one commit")
+    private_upload.add_argument("--folder", required=True, help="a release's name")
+    private_upload.add_argument("files", nargs="+", help="the files to upload")
+    private_upload.set_defaults(run=_private_upload)
+    private_download = privately.add_parser(
+        "download", help="the files of a folder that match a pattern; fails when none does"
+    )
+    private_download.add_argument("--folder", required=True, help="a release's name")
+    private_download.add_argument("--pattern", default="*", help="a glob over the file names")
+    private_download.add_argument("--dir", required=True, help="where the files are written")
+    private_download.add_argument(
+        "--allow-empty", action="store_true", help="succeed when no file matches"
+    )
+    private_download.set_defaults(run=_private_download)
 
     stationing = commands.add_parser(
         "stations", help="build a country's daily means at its stations, from the EEA (E1a)"

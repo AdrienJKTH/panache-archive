@@ -1,0 +1,226 @@
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
+
+import pytest
+from huggingface_hub import CommitOperationAdd
+from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+from huggingface_hub.hf_api import RepoFile
+
+from panache_archive import cli, mirror, private
+from panache_archive.mirror import Asset, git_blob_id
+
+
+class FakeApi:
+    """The private dataset's files by path, and the calls made to it."""
+
+    def __init__(self, files: dict[str, bytes] | None = None, *, public: bool = False) -> None:
+        self.files = files or {}
+        self.public = public
+        self.created: list[dict[str, Any]] = []
+        self.commits: list[tuple[str, list[CommitOperationAdd], str]] = []
+
+    def create_repo(self, repo_id: str, *, repo_type: str, private: bool, exist_ok: bool) -> None:
+        self.created.append(
+            {"repo_id": repo_id, "repo_type": repo_type, "private": private, "exist_ok": exist_ok}
+        )
+
+    def repo_info(self, repo_id: str, *, repo_type: str) -> Any:
+        assert (repo_id, repo_type) == (private.REPO_ID, "dataset")
+
+        class Info:
+            private = not self.public
+
+        return Info()
+
+    def list_repo_tree(self, repo_id: str, *, path_in_repo: str, repo_type: str) -> list[object]:
+        assert (repo_id, repo_type) == (private.REPO_ID, "dataset")
+        if not self.files:
+            raise RepositoryNotFoundError("missing", response=Mock(headers={}))
+        return [
+            RepoFile(path=path, size=len(content), oid="x")  # type: ignore[no-untyped-call]
+            for path, content in sorted(self.files.items())
+            if path.startswith(f"{path_in_repo}/")
+        ]
+
+    def create_commit(
+        self,
+        repo_id: str,
+        operations: Sequence[CommitOperationAdd],
+        *,
+        commit_message: str,
+        repo_type: str,
+    ) -> None:
+        assert repo_type == "dataset"
+        self.commits.append((repo_id, list(operations), commit_message))
+
+    def hf_hub_download(
+        self,
+        repo_id: str,
+        filename: str,
+        *,
+        repo_type: str,
+        local_dir: str,
+    ) -> str:
+        assert (repo_id, repo_type) == (private.REPO_ID, "dataset")
+        target = Path(local_dir) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.files[filename])
+        return str(target)
+
+
+def _store(api: FakeApi) -> private.PrivateStore:
+    return private.PrivateStore("token", api=api)
+
+
+def test_the_models_and_the_experiments_are_private() -> None:
+    assert private.is_private("forecast-models-v1")
+    assert private.is_private("forecast-experiment-v1", "forecast-scores.md")
+    assert private.is_private("downscaled-europe-v1", "downscaling-ozone.lgb.txt")
+    assert private.is_private("downscaled-towns-v1", "downscaling-fine-nitrogen_dioxide.lgb.txt")
+    assert not private.is_private("downscaled-europe-v1", "downscaled-ozone-2021.days")
+    assert not private.is_private("downscaled-europe-v1")
+    assert not private.is_private("cams-europe-v1", "cams-pm10-2021-validated.cells")
+
+
+def test_the_mirror_leaves_the_models_out_and_removes_those_it_holds() -> None:
+    maps = Asset("downscaled-ozone-2021.days", 9, "d")
+    model = Asset("downscaling-ozone.lgb.txt", 3, "m")
+
+    todo = mirror.plan([maps, model], [model], b"card", git_blob_id(b"card"))
+
+    assert [a.name for a in todo.upload] == ["downscaled-ozone-2021.days"]
+    assert todo.delete == ("downscaling-ozone.lgb.txt",)
+
+
+def test_a_private_release_is_not_mirrored(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HF_TOKEN", "token")
+
+    code = cli.main(
+        ["mirror", "--release", "r.json", "--card", "c.md", "--folder", "forecast-models-v1"]
+    )
+
+    assert code == 0
+    assert "private" in capsys.readouterr().out
+
+
+def test_names_lists_a_folder_and_none_when_the_dataset_does_not_exist() -> None:
+    api = FakeApi({"a-v1/x.txt": b"1", "a-v1/y.txt": b"22", "b-v1/z.txt": b"3"})
+
+    assert _store(api).names("a-v1") == ["x.txt", "y.txt"]
+    assert _store(FakeApi()).names("a-v1") == []
+
+
+def test_upload_creates_the_dataset_private_and_commits_the_files_once(tmp_path: Path) -> None:
+    first, second = tmp_path / "a.txt", tmp_path / "b.txt"
+    first.write_bytes(b"1")
+    second.write_bytes(b"2")
+    api = FakeApi()
+
+    _store(api).upload("a-v1", [first, second])
+
+    assert api.created == [
+        {"repo_id": private.REPO_ID, "repo_type": "dataset", "private": True, "exist_ok": True}
+    ]
+    ((repo, operations, message),) = api.commits
+    assert repo == private.REPO_ID
+    assert [o.path_in_repo for o in operations] == ["a-v1/a.txt", "a-v1/b.txt"]
+    assert message == "a-v1: a.txt, b.txt"
+
+
+def test_upload_never_writes_to_a_public_dataset(tmp_path: Path) -> None:
+    file = tmp_path / "a.txt"
+    file.write_bytes(b"1")
+    api = FakeApi(public=True)
+
+    with pytest.raises(PermissionError, match="public"):
+        _store(api).upload("a-v1", [file])
+
+    assert api.commits == []
+
+
+def test_download_writes_the_files_that_match(tmp_path: Path) -> None:
+    api = FakeApi({"a-v1/x.lgb.txt": b"model", "a-v1/y.json": b"{}"})
+
+    found = _store(api).download("a-v1", "*.lgb.txt", tmp_path / "out")
+
+    assert found == [tmp_path / "out" / "x.lgb.txt"]
+    assert found[0].read_bytes() == b"model"
+    assert not (tmp_path / "out" / "y.json").exists()
+
+
+def test_the_commands_need_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit, match="HF_TOKEN"):
+        cli.main(["private", "list", "--folder", "a-v1"])
+
+
+def test_the_commands_list_upload_and_download(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakeApi({"a-v1/x.lgb.txt": b"model"})
+    monkeypatch.setenv("HF_TOKEN", "token")
+    monkeypatch.setattr(private, "HfApi", lambda **_: api)
+    file = tmp_path / "up.txt"
+    file.write_bytes(b"1")
+
+    assert cli.main(["private", "list", "--folder", "a-v1"]) == 0
+    assert capsys.readouterr().out == "x.lgb.txt\n"
+    assert cli.main(["private", "upload", "--folder", "a-v1", str(file)]) == 0
+    assert len(api.commits) == 1
+    assert cli.main(["private", "download", "--folder", "a-v1", "--dir", str(tmp_path / "d")]) == 0
+    assert (tmp_path / "d" / "x.lgb.txt").read_bytes() == b"model"
+    nothing = ["private", "download", "--folder", "a-v1", "--pattern", "*.zip"]
+    nothing += ["--dir", str(tmp_path)]
+    assert cli.main(nothing) == 1
+    assert cli.main([*nothing, "--allow-empty"]) == 0
+
+
+def _failing(api: FakeApi, statuses: list[int]) -> None:
+    commit = api.create_commit
+
+    def create_commit(*args: Any, **kwargs: Any) -> None:
+        if statuses:
+            raise HfHubHTTPError("busy", response=Mock(headers={}, status_code=statuses.pop(0)))
+        commit(*args, **kwargs)
+
+    api.create_commit = create_commit  # type: ignore[method-assign]
+
+
+def test_a_commit_that_met_another_is_made_again(tmp_path: Path) -> None:
+    file = tmp_path / "a.txt"
+    file.write_bytes(b"1")
+    api = FakeApi()
+    _failing(api, [412, 503])
+    waits: list[float] = []
+
+    _store(api).upload("a-v1", [file], sleep=waits.append)
+
+    assert len(api.commits) == 1
+    assert waits == [5.0, 10.0]
+
+
+@pytest.mark.parametrize(("statuses", "raised"), [([401], 401), ([409, 409, 409, 409], 409)])
+def test_a_refusal_or_too_many_conflicts_is_raised(
+    tmp_path: Path, statuses: list[int], raised: int
+) -> None:
+    file = tmp_path / "a.txt"
+    file.write_bytes(b"1")
+    api = FakeApi()
+    _failing(api, statuses)
+
+    with pytest.raises(HfHubHTTPError) as error:
+        _store(api).upload("a-v1", [file], sleep=lambda _: None)
+
+    assert error.value.response.status_code == raised
+    assert api.commits == []
+
+
+def test_download_may_find_nothing(tmp_path: Path) -> None:
+    api = FakeApi({"a-v1/x.txt": b"1"})
+
+    assert _store(api).download("a-v1", "*.parquet", tmp_path) == []

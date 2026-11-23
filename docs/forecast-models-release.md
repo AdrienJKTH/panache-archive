@@ -1,6 +1,0 @@
-The models of Panache's PM2.5 forecast (D98, step 2): from J+1 to J+7 at any place of the CAMS Europe domain, trained by the workflow `Forecast models` from the release `forecast-experiment-v1`'s table (`panache-forecast-experiment train`).
-
-- `lightgbm-j1.txt` to `lightgbm-j7.txt`: one LightGBM booster per lead, as LightGBM's model string. Trained on 21 cities in 8 countries (FR, DE, IT, ES, PL, GB, CZ, GR), 2014-2023, ERA5's daily weather as a perfect forecast, CAMS's stream as the past where it exists. The target is the log ratio of the day's PM2.5 to the mean of the 365 days before the issue.
-- `forecast-models.json`: the features in order, and per lead the calibration (100 quantiles of the errors, truth minus point in log ratio, of the country-held-out run on March 2024 to December 2025 with ECMWF IFS's archived runs as the forecast), the coverage of the 10-90 % interval on countries held out, and the analogs' weight.
-
-Attribution: Copernicus Atmosphere Monitoring Service (CAMS) European air quality reanalyses and forecasts; Hersbach et al. (2023), ERA5 hourly data, Copernicus Climate Change Service; ECMWF IFS forecasts through Open-Meteo (https://open-meteo.com, CC BY 4.0). Neither the European Commission nor ECMWF is responsible for any use of this information.
