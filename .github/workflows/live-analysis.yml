@@ -42,13 +42,16 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # the release
+  contents: read
 
 env:
   RELEASE: maps-analysed-v1
   LEDGERS: innovations-live-v1
   KEEP_DAYS: 7
   GH_TOKEN: ${{ github.token }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  # The run's logs and results, in the private dataset: never an artifact or a summary.
+  RUNS: live-analysis-runs/${{ github.run_id }}
 
 defaults:
   run:
@@ -79,9 +82,11 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Fetch the ledgers
         run: |
-          gh release download "$LEDGERS" --pattern 'innovations-*.parquet' --dir ledgers
+          uv run panache-archive private download --folder "$LEDGERS" --pattern 'innovations-*.parquet' --dir ledgers
           ls -l ledgers
       - name: Run
         id: run
@@ -89,45 +94,39 @@ jobs:
           maps=/tmp/panache/bin/panache-domain-maps
           case "$COMMAND" in
             covariances)
-              "$maps" covariances --ledgers ledgers | tee covariances.jsonl
-              { echo '```'; cat covariances.jsonl; echo '```'; } >> "$GITHUB_STEP_SUMMARY" ;;
+              "$maps" covariances --ledgers ledgers > covariances.jsonl
+              echo "Covariances: $(wc -l < covariances.jsonl) lines, in the private dataset" \
+                >> "$GITHUB_STEP_SUMMARY" ;;
             check)
               "$maps" check --ledgers ledgers --first-day "$FIRST" --last-day "$LAST" \
-                | tee checked.jsonl
-              { echo '```'; cat checked.jsonl; echo '```'; } >> "$GITHUB_STEP_SUMMARY" ;;
+                > checked.jsonl
+              echo "Check: $(wc -l < checked.jsonl) lines, in the private dataset" \
+                >> "$GITHUB_STEP_SUMMARY" ;;
             analyse)
               args=(analyse --ledgers ledgers --out dist --work "$RUNNER_TEMP/work")
               if [[ -n "$FIRST" ]]; then args+=(--first-day "$FIRST"); fi
               if [[ -n "$LAST" ]]; then args+=(--last-day "$LAST"); fi
               "$maps" "${args[@]}" 2> analyse.log | tee -a "$GITHUB_STEP_SUMMARY"
-              tail -5 analyse.log
               if [[ -f dist/analysed.json ]]; then
                 echo "changed=true" >> "$GITHUB_OUTPUT"
                 du -ch dist/* | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
               fi ;;
           esac
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Keep the run's logs and results, privately
         if: always()
-        with:
-          name: live-analysis-${{ inputs.command || 'analyse' }}
-          path: |
-            dist/*
-            *.jsonl
-            *.log
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: Publish
+        run: |
+          files=$(ls *.jsonl *.log 2> /dev/null || true)
+          if [[ -n "$files" ]]; then uv run panache-archive private upload --folder "$RUNS" $files; fi
+      - name: Publish, privately
         if: steps.run.outputs.changed == 'true'
         run: |
-          gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" \
-              --title "Panache's map of the stream's days, corrected by the stations" \
-              --notes-file docs/maps-analysed-release.md --latest=false
-          gh release download "$RELEASE" --pattern analysed.json --output previous.json \
-            2> /dev/null || echo '{}' > previous.json
+          uv run panache-archive private download --folder "$RELEASE" --pattern analysed.json --dir previous \
+            --allow-empty > /dev/null
+          if [[ -f previous/analysed.json ]]; then mv previous/analysed.json previous.json
+          else echo '{}' > previous.json; fi
           # The files first: `analysed.json` names them.
-          gh release upload "$RELEASE" dist/*.days --clobber
-          gh release upload "$RELEASE" dist/analysed.json --clobber
+          uv run panache-archive private upload --folder "$RELEASE" dist/*.days
+          uv run panache-archive private upload --folder "$RELEASE" dist/analysed.json
       - name: Delete the files analysed.json no longer names
         if: steps.run.outputs.changed == 'true'
         run: |
@@ -136,12 +135,11 @@ jobs:
           # one a moment ago still finds its files.
           named=$(jq -r '(.days // [] | .[].asset), (.spreads // [] | .[].asset)' \
             dist/analysed.json previous.json)
-          for asset in $(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE" \
-              --jq '.assets[].name | select(endswith(".days"))'); do
+          old=()
+          for asset in $(uv run panache-archive private list --folder "$RELEASE" | grep "\.days$"); do
             if grep -qxF "$asset" <<< "$named"; then continue; fi
             day=${asset%.days}
             day=${day: -10}
-            if [[ "$day" < "$oldest" ]]; then
-              gh release delete-asset "$RELEASE" "$asset" --yes
-            fi
+            if [[ "$day" < "$oldest" ]]; then old+=("$asset"); fi
           done
+          if (( ${#old[@]} > 0 )); then uv run panache-archive private delete --folder "$RELEASE" "${old[@]}"; fi

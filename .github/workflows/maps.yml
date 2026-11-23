@@ -33,6 +33,9 @@ permissions:
 env:
   RELEASE: maps-europe-v1
   BANDS: 12
+  # Where the bands wait for the stacking, in the private dataset (never an artifact: a public
+  # repository's artifacts are served to any signed-in user): dropped once stacked.
+  SCRATCH: scratch/${{ github.run_id }}
   PANACHE: ${{ inputs.panache }}
   YEARS: ${{ inputs.years }}
   PILOT: ${{ inputs.pilot }}
@@ -67,6 +70,7 @@ jobs:
       matrix:
         band: ${{ fromJSON(needs.plan.outputs.bands) }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Check out Panache
         # Panache's repository is private: a read-only deploy key on it, whose private half is
@@ -82,6 +86,8 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Build the band
         run: |
           [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
@@ -98,12 +104,12 @@ jobs:
             du -sh "$RUNNER_TEMP/work" "band-${{ matrix.band }}" 2> /dev/null || true
             df -h "$RUNNER_TEMP" | tail -1
           } | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Keep the band's classes
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: band-${{ matrix.band }}
-          path: band-${{ matrix.band }}/
-          retention-days: 7
+      - name: Keep the band's classes, in the private dataset
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: >
+          uv run panache-archive private upload --folder "$SCRATCH/band-${{ matrix.band }}"
+          "band-${{ matrix.band }}"
 
   assemble:
     name: Stack the bands and publish
@@ -111,9 +117,6 @@ jobs:
     if: inputs.pilot == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    permissions:
-      contents: write
-      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -131,17 +134,25 @@ jobs:
           uv pip install --python /tmp/panache/bin/python ./panache/backend
       - name: Download the bands
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --pattern "band-*" --dir parts
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          for band in $(seq 0 $((BANDS - 1))); do
+            uv run panache-archive private download --folder "$SCRATCH/band-$band" --pattern "*" \
+              --dir "parts/band-$band"
+          done
       - name: Stack them
         run: |
           /tmp/panache/bin/panache-domain-maps assemble parts/band-* --out dist
           du -ch dist/*.days | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Publish
+      - name: Publish, privately
         env:
-          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$RELEASE" dist/*.days
+      - name: Drop the bands
+        if: always()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" --title "Panache's map colourings over the whole domain" \
-              --notes-file docs/maps-europe-release.md
-          gh release upload "$RELEASE" dist/*.days --clobber
+          for band in $(seq 0 $((BANDS - 1))); do
+            uv run panache-archive private delete --folder "$SCRATCH/band-$band"
+          done

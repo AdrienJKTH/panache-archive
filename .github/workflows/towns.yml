@@ -38,6 +38,8 @@ permissions:
 
 env:
   RELEASE: downscaled-towns-v1
+  # Where the maps go, in the private dataset: a pilot's in a folder of its run.
+  FOLDER: ${{ inputs.days == '' && 'downscaled-towns-v1' || format('pilots/{0}', github.run_id) }}
   DAYS: ${{ inputs.days }}
   TOWN: ${{ inputs.town }}
   POLLUTANT: ${{ inputs.pollutant }}
@@ -47,8 +49,6 @@ jobs:
     name: Train the fine model
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    permissions:
-      contents: write
     outputs:
       years: ${{ steps.plan.outputs.years }}
     steps:
@@ -70,16 +70,12 @@ jobs:
           uv pip install --python /tmp/panache/bin/python ./panache/backend
       - name: Install the archive's tools
         run: uv sync --locked
-      - name: Make sure the release exists
+      - name: What the private dataset holds
         env:
-          GH_TOKEN: ${{ github.token }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" --title "Towns at ~100 m, day by day" \
-              --notes-file docs/towns-release.md
-          gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
-          uv run panache-archive private list --folder "$RELEASE" > models.txt
+          uv run panache-archive private list --folder "$RELEASE" > built.txt
+          cp built.txt models.txt
       - name: Fetch the archive and the fine layers
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,8 +120,6 @@ jobs:
     if: needs.train.outputs.years != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 330
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -161,17 +155,10 @@ jobs:
           /tmp/panache/bin/panache-downscaling-towns --archive data/archive --fine data/fine
           year --pollutant "$POLLUTANT" --town "$TOWN" --year "${{ matrix.year }}" --models models
           ${DAYS:+--days "$DAYS"} --out dist | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Publish
-        if: env.DAYS == ''
+      - name: Publish, privately
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE" dist/*.days --clobber
-      - name: Keep as the pilot's artifact
-        if: env.DAYS != ''
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: town-${{ matrix.year }}
-          path: dist/
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$FOLDER" dist/*.days
 
   months:
     name: Monthly maps
@@ -179,8 +166,6 @@ jobs:
     if: ${{ always() && needs.train.result == 'success' && inputs.days == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -197,19 +182,21 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Sum up the years without their months
         env:
-          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+          uv run panache-archive private list --folder "$RELEASE" > built.txt
           for year in $(sed -n "s/^downscaled-$POLLUTANT-$TOWN-\([0-9]*\)\.days$/\1/p" built.txt); do
             grep -qx "typical-$POLLUTANT-$TOWN-$year.days" built.txt && continue
-            gh release download "$RELEASE" --pattern "downscaled-$POLLUTANT-$TOWN-$year.days" \
-              --dir days
+            uv run panache-archive private download --folder "$RELEASE" \
+              --pattern "downscaled-$POLLUTANT-$TOWN-$year.days" --dir days > /dev/null
             /tmp/panache/bin/panache-downscaling-towns months --pollutant "$POLLUTANT" \
               --town "$TOWN" --year "$year" \
               --days-file "days/downscaled-$POLLUTANT-$TOWN-$year.days" --out dist \
               | tee -a "$GITHUB_STEP_SUMMARY"
-            gh release upload "$RELEASE" "dist/typical-$POLLUTANT-$TOWN-$year.days"
+            uv run panache-archive private upload --folder "$RELEASE" "dist/typical-$POLLUTANT-$TOWN-$year.days"
             rm "days/downscaled-$POLLUTANT-$TOWN-$year.days"
           done

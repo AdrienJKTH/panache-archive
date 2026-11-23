@@ -24,6 +24,8 @@ permissions:
   contents: read
 
 env:
+  # The map of causes it reads is in the private dataset (the client reads the token from here).
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
   PANACHE: ${{ inputs.panache }}
 
 jobs:

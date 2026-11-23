@@ -46,13 +46,14 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # the release
+  contents: read
   actions: read # the fields' artifacts
 
 env:
   RELEASE: innovations-live-v1
   STATIONS: stations-live-v1
   GH_TOKEN: ${{ github.token }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 defaults:
   run:
@@ -102,6 +103,8 @@ jobs:
           first="${{ inputs.first_day }}"; last="${{ inputs.last_day }}"
           echo "first=${first:-$default_first}" >> "$GITHUB_OUTPUT"
           echo "last=${last:-$(date -u -d yesterday +%F)}" >> "$GITHUB_OUTPUT"
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Fetch the fields or the ledger, and the live stations
         env:
           FIELDS_RUN: ${{ matrix.fields_run }}
@@ -116,7 +119,8 @@ jobs:
             uv run panache-archive live-stations --pollutant "$POLLUTANT" \
               --first-day "$FIRST" --last-day "$LAST" --out stations 2> stations.log | tail -3
           else
-            gh release download "$RELEASE" --pattern "innovations-$POLLUTANT.parquet" --dir ledger
+            uv run panache-archive private download --folder "$RELEASE" --pattern "innovations-$POLLUTANT.parquet" \
+              --dir ledger
             day="$FIRST"
             while [[ ! "$day" > "$LAST" ]]; do
               gh release download "$STATIONS" --dir stations \
@@ -131,10 +135,10 @@ jobs:
           args=(update --pollutant "$POLLUTANT" --stations stations --out dist)
           if [[ "$SEED" == true ]]; then args+=(--fields "fields/fields-$POLLUTANT.npz")
           else args+=(--ledger "ledger/innovations-$POLLUTANT.parquet"); fi
-          {
-            echo "### $POLLUTANT"
-            /tmp/panache/bin/panache-assimilation-innovations "${args[@]}" 2> update.log
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          # What it prints is the ledger's own statistics: kept in the private dataset below,
+          # not in the public summary.
+          /tmp/panache/bin/panache-assimilation-innovations "${args[@]}" > "update-$POLLUTANT.txt" \
+            2> update.log
       - name: The last live day's day-to-day innovations, from the two assets
         run: |
           last=$(find stations -name "stations-live-$POLLUTANT-*.parquet" | sort | tail -1)
@@ -142,33 +146,15 @@ jobs:
           day=$(basename "$last" .parquet); day=${day: -10}
           /tmp/panache/bin/panache-assimilation-innovations day --pollutant "$POLLUTANT" \
             --ledger "dist/innovations-$POLLUTANT.parquet" --stations "$last" --day "$day" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: innovations-${{ matrix.pollutant }}
-          path: |
-            dist/*.parquet
-            *.log
-          retention-days: 7
-
-  publish:
-    name: Publish
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: innovations-*
-          path: artifacts
-      - name: Upload
+            > "day-$POLLUTANT.txt"
+      - name: Publish the ledger, privately
+        run: >
+          uv run panache-archive private upload --folder "$RELEASE"
+          "dist/innovations-$POLLUTANT.parquet"
+      - name: Keep what the run printed, privately
+        if: always()
         run: |
-          gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" --title "Each station's innovations over its past year" \
-              --notes-file docs/innovations-live-release.md --latest=false
-          # Each artifact keeps its own `dist/` (beside its logs).
-          mapfile -t assets < <(find artifacts -name 'innovations-*.parquet')
-          if (( ${#assets[@]} == 0 )); then echo "no asset built" >&2; exit 1; fi
-          gh release upload "$RELEASE" "${assets[@]}" --clobber
-          echo "assets uploaded: ${#assets[@]}" >> "$GITHUB_STEP_SUMMARY"
+          files=$(ls update-*.txt day-*.txt update.log stations.log 2> /dev/null || true)
+          if [[ -n "$files" ]]; then
+            uv run panache-archive private upload --folder "live-innovations-runs/${{ github.run_id }}-$POLLUTANT" $files
+          fi

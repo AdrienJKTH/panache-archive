@@ -36,6 +36,8 @@ permissions:
 
 env:
   RELEASE: downscaled-v1
+  # Where the maps go, in the private dataset: a pilot's in a folder of its run.
+  FOLDER: ${{ inputs.days == '' && 'downscaled-v1' || format('pilots/{0}', github.run_id) }}
   PANACHE: ${{ inputs.panache }}
   DAYS: ${{ inputs.days }}
   POLLUTANTS: ${{ inputs.pollutants }}
@@ -45,8 +47,6 @@ jobs:
     name: Train the models
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    permissions:
-      contents: write
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -70,14 +70,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/fetch-for-maps.sh data/archive all
-      - name: Make sure the release exists
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view "$RELEASE" > /dev/null 2>&1 \
-            || gh release create "$RELEASE" \
-              --title "The air quality index's pollutants at 1 km over France, day by day" \
-              --notes-file docs/downscaled-release.md
       - name: Install the archive's tools
         run: uv sync --locked
       - name: Train the models the private dataset lacks
@@ -101,7 +93,7 @@ jobs:
       - name: Plan
         id: plan
         env:
-          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           YEARS: ${{ inputs.years }}
         run: |
           last=$(( $(date -u +%Y) - 1 ))
@@ -110,7 +102,7 @@ jobs:
             *-*) first=${YEARS%-*} last=${YEARS#*-} ;;
             *) first=$YEARS last=$YEARS ;;
           esac
-          gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+          uv run panache-archive private list --folder "$RELEASE" > built.txt
           matrix=$(jq -nc --argjson first "$first" --argjson last "$last" \
             --rawfile built built.txt --arg pilot "$DAYS" --argjson pollutants "$POLLUTANTS" '
             [range($first; $last + 1) as $year
@@ -127,8 +119,6 @@ jobs:
     if: needs.train.outputs.matrix != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 330
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -164,14 +154,7 @@ jobs:
           /tmp/panache/bin/panache-downscaling-maps --archive data/archive
           year --pollutant "${{ matrix.pollutant }}" --year "${{ matrix.year }}" --models models
           ${DAYS:+--days "$DAYS"} --out dist
-      - name: Publish
-        if: env.DAYS == ''
+      - name: Publish, privately
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE" dist/*.days --clobber
-      - name: Keep as the pilot's artifact
-        if: env.DAYS != ''
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: downscaled-${{ matrix.pollutant }}-${{ matrix.year }}
-          path: dist/
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$FOLDER" dist/*.days
