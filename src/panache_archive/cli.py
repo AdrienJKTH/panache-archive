@@ -32,6 +32,7 @@ from panache_archive import (
     live_stations,
     merra2,
     mirror,
+    move,
     plan,
     private,
     space,
@@ -224,6 +225,26 @@ def _private_upload(args: argparse.Namespace) -> int:
     files = [Path(name) for name in args.files]
     _private_store().upload(args.folder, files)
     print(f"{len(files)} files in the private dataset's {args.folder}")
+    return 0
+
+
+def _private_delete(args: argparse.Namespace) -> int:
+    _private_store().delete(args.folder, args.names or None)
+    print(f"{', '.join(args.names) if args.names else 'the whole folder'} out of {args.folder}")
+    return 0
+
+
+def _private_squash(_args: argparse.Namespace) -> int:
+    _private_store().squash()
+    print("the private dataset's history is squashed")
+    return 0
+
+
+def _private_import(args: argparse.Namespace) -> int:
+    release = mirror.load_release(Path(args.release))
+    with tempfile.TemporaryDirectory(dir=args.workdir) as workdir:
+        copied = move.move(_private_store(), release, args.folder, Path(workdir))
+    print(f"{len(release)} assets in the release: {len(copied)} copied into {args.folder}")
     return 0
 
 
@@ -556,10 +577,29 @@ def _parser() -> argparse.ArgumentParser:
     private_list = privately.add_parser("list", help="the files of a folder, one a line")
     private_list.add_argument("--folder", required=True, help="a release's name")
     private_list.set_defaults(run=_private_list)
-    private_upload = privately.add_parser("upload", help="files into a folder, in one commit")
+    private_upload = privately.add_parser(
+        "upload", help="files (or directories, with the files under them) into a folder, one commit"
+    )
     private_upload.add_argument("--folder", required=True, help="a release's name")
-    private_upload.add_argument("files", nargs="+", help="the files to upload")
+    private_upload.add_argument("files", nargs="+", help="the files or directories to upload")
     private_upload.set_defaults(run=_private_upload)
+    private_delete = privately.add_parser(
+        "delete", help="files out of a folder, or the whole folder without names"
+    )
+    private_delete.add_argument("--folder", required=True, help="a release's name")
+    private_delete.add_argument("names", nargs="*", help="the files to delete")
+    private_delete.set_defaults(run=_private_delete)
+    private_squash = privately.add_parser(
+        "squash", help="squash the dataset's history (irreversible)"
+    )
+    private_squash.set_defaults(run=_private_squash)
+    private_import = privately.add_parser(
+        "import", help="copy a public release into a folder, a batch at a time"
+    )
+    private_import.add_argument("--release", required=True, help="the release's JSON, from GitHub")
+    private_import.add_argument("--folder", required=True, help="its name there")
+    private_import.add_argument("--workdir", help="where each batch of assets is downloaded")
+    private_import.set_defaults(run=_private_import)
     private_download = privately.add_parser(
         "download", help="the files of a folder that match a pattern; fails when none does"
     )

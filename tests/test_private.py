@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from huggingface_hub import CommitOperationAdd
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete
 from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 from huggingface_hub.hf_api import RepoFile
 
@@ -19,7 +19,8 @@ class FakeApi:
         self.files = files or {}
         self.public = public
         self.created: list[dict[str, Any]] = []
-        self.commits: list[tuple[str, list[CommitOperationAdd], str]] = []
+        self.commits: list[tuple[str, list[Any], str]] = []
+        self.squashed = 0
 
     def create_repo(self, repo_id: str, *, repo_type: str, private: bool, exist_ok: bool) -> None:
         self.created.append(
@@ -47,13 +48,17 @@ class FakeApi:
     def create_commit(
         self,
         repo_id: str,
-        operations: Sequence[CommitOperationAdd],
+        operations: Sequence[CommitOperationAdd | CommitOperationDelete],
         *,
         commit_message: str,
         repo_type: str,
     ) -> None:
         assert repo_type == "dataset"
         self.commits.append((repo_id, list(operations), commit_message))
+
+    def super_squash_history(self, repo_id: str, *, repo_type: str) -> None:
+        assert (repo_id, repo_type) == (private.REPO_ID, "dataset")
+        self.squashed += 1
 
     def hf_hub_download(
         self,
@@ -79,18 +84,22 @@ def test_the_models_and_the_experiments_are_private() -> None:
     assert private.is_private("forecast-experiment-v1", "forecast-scores.md")
     assert private.is_private("downscaled-europe-v1", "downscaling-ozone.lgb.txt")
     assert private.is_private("downscaled-towns-v1", "downscaling-fine-nitrogen_dioxide.lgb.txt")
-    assert not private.is_private("downscaled-europe-v1", "downscaled-ozone-2021.days")
-    assert not private.is_private("downscaled-europe-v1")
+    assert private.is_private("downscaled-europe-v1", "downscaled-ozone-2021.days")
+    assert private.is_private("maps-live-v1", "live.json")
+    assert private.is_private("seasons-europe-v1")
+    assert not private.is_private("downscaling-europe-v1", "static-europe-1km.npz")
+    assert not private.is_private("downscaling-europe-v1", "stations-FR-pm10.parquet")
+    assert not private.is_private("stations-live-v1")
     assert not private.is_private("cams-europe-v1", "cams-pm10-2021-validated.cells")
 
 
 def test_the_mirror_leaves_the_models_out_and_removes_those_it_holds() -> None:
-    maps = Asset("downscaled-ozone-2021.days", 9, "d")
+    maps = Asset("static-europe-1km.npz", 9, "d")
     model = Asset("downscaling-ozone.lgb.txt", 3, "m")
 
     todo = mirror.plan([maps, model], [model], b"card", git_blob_id(b"card"))
 
-    assert [a.name for a in todo.upload] == ["downscaled-ozone-2021.days"]
+    assert [a.name for a in todo.upload] == ["static-europe-1km.npz"]
     assert todo.delete == ("downscaling-ozone.lgb.txt",)
 
 
@@ -254,7 +263,7 @@ class FakePublicApi:
 PUBLIC = [
     "README.md",
     "cams-europe-v1/cams-pm10-2021-validated.cells",
-    "downscaled-europe-v1/downscaled-ozone-2021.days",
+    "downscaling-europe-v1/static-europe-1km.npz",
     "downscaled-europe-v1/downscaling-ozone.lgb.txt",
     "downscaled-towns-v1/downscaling-fine-nitrogen_dioxide.lgb.txt",
     "forecast-experiment-v1/forecast-scores.md",
@@ -310,3 +319,71 @@ def test_the_purge_command_reports_what_it_removed(
     monkeypatch.delenv("HF_TOKEN")
     with pytest.raises(SystemExit, match="HF_TOKEN"):
         cli.main(["private", "purge-public"])
+
+
+def test_a_directory_is_uploaded_with_the_paths_of_its_files(tmp_path: Path) -> None:
+    band = tmp_path / "band-3"
+    (band / "sub").mkdir(parents=True)
+    (band / "a.days").write_bytes(b"a")
+    (band / "sub" / "b.npz").write_bytes(b"b")
+    loose = tmp_path / "c.json"
+    loose.write_bytes(b"c")
+    api = FakeApi()
+
+    _store(api).upload("scratch/7", [band, loose])
+
+    ((_, operations, _),) = api.commits
+    assert [o.path_in_repo for o in operations] == [
+        "scratch/7/a.days",
+        "scratch/7/sub/b.npz",
+        "scratch/7/c.json",
+    ]
+
+
+def test_files_report_their_sizes() -> None:
+    api = FakeApi({"a-v1/x.txt": b"1", "a-v1/y.txt": b"22"})
+
+    assert _store(api).files("a-v1") == {"x.txt": 1, "y.txt": 2}
+
+
+def test_delete_removes_files_or_a_whole_folder() -> None:
+    api = FakeApi()
+
+    _store(api).delete("a-v1", ["x.txt", "y.txt"])
+    _store(api).delete("scratch/7")
+    _store(api).delete("a-v1", [])  # nothing to delete: no commit
+
+    first, second = api.commits
+    assert [(o.path_in_repo, o.is_folder) for o in first[1]] == [
+        ("a-v1/x.txt", False),
+        ("a-v1/y.txt", False),
+    ]
+    assert [(o.path_in_repo, o.is_folder) for o in second[1]] == [("scratch/7/", True)]
+    assert len(api.commits) == 2
+
+
+def test_squash_squashes_the_history_of_a_private_dataset_only() -> None:
+    api = FakeApi()
+    _store(api).squash()
+    assert api.squashed == 1
+
+    with pytest.raises(PermissionError):
+        _store(FakeApi(public=True)).squash()
+
+
+def test_the_delete_and_squash_commands(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = FakeApi({"a-v1/x.txt": b"1"})
+    monkeypatch.setenv("HF_TOKEN", "token")
+    monkeypatch.setattr(private, "HfApi", lambda **_: api)
+
+    assert cli.main(["private", "delete", "--folder", "a-v1", "x.txt"]) == 0
+    assert cli.main(["private", "delete", "--folder", "scratch/7"]) == 0
+    assert cli.main(["private", "squash"]) == 0
+
+    assert len(api.commits) == 2
+    assert api.squashed == 1
+    out = capsys.readouterr().out
+    assert "x.txt out of a-v1" in out
+    assert "the whole folder out of scratch/7" in out
