@@ -1,0 +1,42 @@
+name: Import into the private dataset
+
+# What Panache computes is private (Panache's D114): the maps go to the private dataset
+# (`panache_archive.private`) like the models. This copies what the releases published before into
+# it, a batch of at most 4 GB at a time (`panache-archive private import`): each asset is checked
+# against the release's SHA-256, and one already there with the same size is left as it is, so a run
+# cut short can be started again. It only copies: the public assets are deleted by hand, once
+# Panache reads the private copies (`purge-public.yml`).
+
+on:
+  workflow_dispatch:
+    inputs:
+      releases:
+        description: "The releases to copy, a JSON list"
+        default: '["maps-europe-v1", "seasons-europe-v1", "maps-live-v1", "maps-analysed-v1", "innovations-live-v1", "downscaled-towns-v1", "downscaled-v1", "downscaled-europe-v1"]'
+
+permissions:
+  contents: read
+
+jobs:
+  import:
+    name: ${{ matrix.release }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        release: ${{ fromJSON(inputs.releases) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Copy the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/${{ matrix.release }}" > release.json
+          uv run panache-archive private import --release release.json \
+            --folder "${{ matrix.release }}" --workdir "$RUNNER_TEMP" | tee -a "$GITHUB_STEP_SUMMARY"

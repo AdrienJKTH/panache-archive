@@ -1,0 +1,30 @@
+name: Squash the private dataset
+
+# The private dataset's free quota counts every revision of every file it ever held: the daily
+# maps, the ledgers and the parts of a year being built are written again and again. Squashing the
+# history into one commit frees what was dropped (`panache-archive private squash`). Irreversible,
+# and not to run while another workflow commits: it runs early on Mondays, when the builds are
+# quiet, and a build that fails for it is run again.
+
+on:
+  schedule:
+    - cron: "25 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  squash:
+    name: Squash
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Squash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private squash | tee -a "$GITHUB_STEP_SUMMARY"

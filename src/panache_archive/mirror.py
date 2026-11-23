@@ -160,7 +160,7 @@ def sync(
         for asset in group:
             target = workdir / asset.name
             download(asset, target)
-            if asset.sha256 is not None and _sha256(target) != asset.sha256:
+            if asset.sha256 is not None and sha256(target) != asset.sha256:
                 raise ValueError(f"{asset.name} was not downloaded whole")
             paths[f"{folder}/{asset.name}"] = target
         hub.commit(paths, [], f"Mirror {folder}: {', '.join(a.name for a in group)}")
@@ -269,7 +269,7 @@ def _same(asset: Asset, mirrored: Asset) -> bool:
     return asset.sha256 is None or mirrored.sha256 is None or asset.sha256 == mirrored.sha256
 
 
-def _sha256(path: Path) -> str:
+def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1 << 20), b""):
