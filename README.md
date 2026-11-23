@@ -77,6 +77,10 @@ Every release (the whole domain's, France's, and the downscaling's) is mirrored 
 
 It writes with the repository secret `HF_TOKEN` (a token of the dataset's owner, with write access).
 
+### The private dataset
+
+What the archive's data are used to learn is not published: the trained models (the forecast's boosters and their calibration, the downscaling's `*.lgb.txt`, whose text files carry the feature names) and the experiments' tables and scores live in the private Hugging Face dataset `adrien4916/panache-models` (`panache-archive private`, `panache_archive.private`), one folder per release name. The workflows that build them (`Forecast models`, `Downscaled maps`, `Downscaled maps, Europe`, `Town maps`, `Forecast experiment`) write there with `HF_TOKEN` and publish nothing of them to a release, an artifact, a log or a step summary; `Mirror` leaves them out. Panache's backend reads them with a read token. [`Move to the private dataset`](.github/workflows/private-move.yml) copied the ones published before.
+
 ## ERA5 daily weather
 
 The release [`era5-v1`](../../releases/tag/era5-v1) holds one asset per year, such as `era5-2021.parquet`: France's daily weather from ERA5 (0.25°, 43 by 63 grid points, the same box), with the nine daily variables of Panache's weather model:

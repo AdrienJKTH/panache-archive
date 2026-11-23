@@ -6,8 +6,10 @@ name: Forecast experiment
 # (climatology, persistence, LightGBM, analogs) and these are scored on the same days, each country
 # calibrated on the others (`panache-forecast-experiment run`).
 #
-# The input table is the release `forecast-experiment-v1`'s, built by
-# `panache-forecast-experiment build` (the archives and Open-Meteo's Previous Runs API).
+# The input table is the folder `forecast-experiment-v1`'s of the private dataset, built by
+# `panache-forecast-experiment build` (the archives and Open-Meteo's Previous Runs API), and
+# the forecasts and the scores go there too (`panache_archive.private`): never to a public
+# release, an artifact, the log or the summary, which only count the forecasts.
 
 on:
   workflow_dispatch:
@@ -29,7 +31,8 @@ permissions:
   contents: read
 
 env:
-  RELEASE: forecast-experiment-v1
+  RELEASE: forecast-experiment-v1  # a folder of the private dataset
+  FOUNDATION: foundation-runs/${{ github.run_id }}
 
 jobs:
   foundation:
@@ -45,12 +48,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Fetch the table
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "$RELEASE" --pattern forecast-experiment.parquet --dir inputs
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private download --folder "$RELEASE" \
+          --pattern forecast-experiment.parquet --dir inputs
       - name: Forecast
         env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           METHOD: ${{ matrix.method }}
           COUNTRY: ${{ matrix.country }}
           EVERY: ${{ inputs.every }}
@@ -58,12 +65,10 @@ jobs:
         run: |
           uv run --script experiments/forecast_foundation.py --data inputs/forecast-experiment.parquet \
             --method "$METHOD" --country "$COUNTRY" --every "$EVERY" --history "$HISTORY" \
-            --out "out/$METHOD-$COUNTRY.parquet" 2>&1 | tee forecast.log
+            --out "out/$METHOD-$COUNTRY.parquet" > forecast.log 2>&1 \
+            || { tail -n 20 forecast.log; exit 1; }
           grep -E "issue days|forecasts in" forecast.log >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: foundation-${{ matrix.method }}-${{ matrix.country }}
-          path: out/
+          uv run panache-archive private upload --folder "$FOUNDATION" "out/$METHOD-$COUNTRY.parquet"
 
   score:
     name: Score
@@ -71,8 +76,6 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -88,15 +91,16 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
-      - name: Fetch the table
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Fetch the table and the foundation models' forecasts
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "$RELEASE" --pattern forecast-experiment.parquet --dir inputs
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: foundation-*
-          path: foundation
-          merge-multiple: true
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run panache-archive private download --folder "$RELEASE" \
+            --pattern forecast-experiment.parquet --dir inputs
+          uv run panache-archive private download --folder "$FOUNDATION" \
+            --pattern '*.parquet' --dir foundation --allow-empty
       - name: Keep the models that forecast every country
         run: |
           /tmp/panache/bin/python - <<'EOF'
@@ -116,22 +120,15 @@ jobs:
         env:
           HISTORY: ${{ inputs.history }}
         run: |
-          set -o pipefail
           mkdir -p out
           foundation=()
           [ -f foundation-forecasts.parquet ] && foundation=(--foundation foundation-forecasts.parquet)
           /tmp/panache/bin/panache-forecast-experiment run --data inputs/forecast-experiment.parquet \
             "${foundation[@]}" --history "$HISTORY" --out "out/forecast-scores-$HISTORY.json" \
-            | tee "out/forecast-scores-$HISTORY.md"
-          cat "out/forecast-scores-$HISTORY.md" >> "$GITHUB_STEP_SUMMARY"
+            > "out/forecast-scores-$HISTORY.md"
           [ -f foundation-forecasts.parquet ] \
             && cp foundation-forecasts.parquet "out/foundation-forecasts-$HISTORY.parquet" || true
-      - name: Publish the scores
+      - name: Publish the scores, privately
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE" out/* --clobber
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: forecast-scores
-          path: out/
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$RELEASE" out/*

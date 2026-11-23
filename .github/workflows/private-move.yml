@@ -1,0 +1,41 @@
+name: Move to the private dataset
+
+# Copies what was published before the private dataset existed (`panache_archive.private`) from its
+# public releases to it: the forecast models and the experiment's results whole, and each
+# downscaling model (`*.lgb.txt`) of the maps' releases. It only copies: the public assets are
+# deleted by hand, once Panache reads the private copies. Run it again at will: a file already
+# there is written again with the same content.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  move:
+    name: ${{ matrix.release }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { release: forecast-models-v1, pattern: "*" }
+          - { release: forecast-experiment-v1, pattern: "*" }
+          - { release: downscaled-v1, pattern: "*.lgb.txt" }
+          - { release: downscaled-europe-v1, pattern: "*.lgb.txt" }
+          - { release: downscaled-towns-v1, pattern: "*.lgb.txt" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Fetch the public assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ matrix.release }}" --pattern "${{ matrix.pattern }}" --dir move
+      - name: Write them to the private dataset
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "${{ matrix.release }}" move/*

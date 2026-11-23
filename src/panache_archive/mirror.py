@@ -9,7 +9,9 @@ folder `cams-europe-v1`. The `Mirror` workflow keeps the folder equal to the rel
 - a file the release no longer holds (an interim year replaced by its validated twin) is deleted;
 - the dataset card (`README.md`) follows `docs/hugging-face-card.md`;
 - the parts of a year being built (`downscaled-<pollutant>-<year>-part<k>.days`, Panache's D79)
-  stay out: they live an hour or three, until the year they make is published.
+  stay out: they live an hour or three, until the year they make is published;
+- so do the models (`*.lgb.txt`), which a release may still hold: they belong to the private
+  dataset (`panache_archive.private`), and are deleted from the mirror if one got there.
 A download that GitHub answers with a server error, or that is cut, is tried again.
 Assets go in batches of at most `BATCH_BYTES`, one commit each, so that a runner's disk holds one
 batch at a time.
@@ -31,7 +33,7 @@ from typing import Any, Final, Protocol
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 from huggingface_hub.hf_api import RepoFile
 
-from panache_archive import web
+from panache_archive import private, web
 
 REPO_ID: Final = "adrien4916/air_qual_indicators"
 FOLDER: Final = "cams-europe-v1"
@@ -106,8 +108,10 @@ def plan(
     release: Sequence[Asset], mirrored: Sequence[Asset], card: bytes, card_blob: str | None
 ) -> Plan:
     """What to upload and delete so that the mirror holds exactly the release, and its card;
-    the release's `TRANSIENT` assets left out."""
-    release = [a for a in release if not TRANSIENT.search(a.name)]
+    the release's `TRANSIENT` and private assets left out."""
+    release = [
+        a for a in release if not TRANSIENT.search(a.name) and not private.is_private("", a.name)
+    ]
     there = {a.name: a for a in mirrored}
     upload = tuple(
         asset

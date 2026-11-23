@@ -68,30 +68,34 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Make sure the release exists
         env:
           GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           gh release view "$RELEASE" > /dev/null 2>&1 \
             || gh release create "$RELEASE" --title "Towns at ~100 m, day by day" \
               --notes-file docs/towns-release.md
           gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+          uv run panache-archive private list --folder "$RELEASE" > models.txt
       - name: Fetch the archive and the fine layers
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          grep -qx "downscaling-fine-$POLLUTANT.lgb.txt" built.txt && exit 0
+          grep -qx "downscaling-fine-$POLLUTANT.lgb.txt" models.txt && exit 0
           scripts/fetch-for-maps.sh data/archive all
           gh release download fine-v1 --pattern "fine-*.npz" --dir data/fine
-      - name: Train the model the release lacks
+      - name: Train the model the private dataset lacks
         env:
-          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           # A published model stays: the maps built with it would no longer match a new one.
-          grep -qx "downscaling-fine-$POLLUTANT.lgb.txt" built.txt && exit 0
+          grep -qx "downscaling-fine-$POLLUTANT.lgb.txt" models.txt && exit 0
           /tmp/panache/bin/panache-downscaling-towns --archive data/archive --fine data/fine \
             train --pollutant "$POLLUTANT" --out models
-          gh release upload "$RELEASE" models/*.lgb.txt
+          uv run panache-archive private upload --folder "$RELEASE" models/*.lgb.txt
       - name: Plan
         id: plan
         env:
@@ -142,13 +146,16 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Fetch the archive's year, the fine layers and the model
         env:
           GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           scripts/fetch-for-maps.sh data/archive "${{ matrix.year }}"
           gh release download fine-v1 --pattern "fine-*.npz" --dir data/fine
-          gh release download "$RELEASE" --pattern "*.lgb.txt" --dir models
+          uv run panache-archive private download --folder "$RELEASE" --pattern "*.lgb.txt" --dir models
       - name: Build
         run: >
           /tmp/panache/bin/panache-downscaling-towns --archive data/archive --fine data/fine

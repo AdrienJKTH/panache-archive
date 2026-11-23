@@ -7,7 +7,8 @@ name: Downscaled maps
 # each pollutant's model once on the EEA's background stations (release downscaling-v1), then
 # predicts every land cell of every day, ~25 s a day, from the archive's CAMS (cams-v1) and ERA5
 # (era5-v1). A run trains the models and builds the pollutant-years the release lacks, among the
-# pollutants asked; with `days`, a pilot builds each year's first days as the run's artifacts,
+# pollutants asked (the models go to the private dataset, `panache_archive.private`,
+# never to the release); with `days`, a pilot builds each year's first days as the run's artifacts,
 # without touching the release's maps.
 
 on:
@@ -77,11 +78,13 @@ jobs:
             || gh release create "$RELEASE" \
               --title "The air quality index's pollutants at 1 km over France, day by day" \
               --notes-file docs/downscaled-release.md
-      - name: Train the models the release lacks
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Train the models the private dataset lacks
         env:
-          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          gh release view "$RELEASE" --json assets --jq '.assets[].name' > models.txt
+          uv run panache-archive private list --folder "$RELEASE" > models.txt
           # A published model stays: the maps built with it would no longer match a new one.
           missing=$(jq -r --rawfile built models.txt '.[] as $pollutant
             | select(($built | split("\n")) | index("downscaling-\($pollutant).lgb.txt") | not)
@@ -93,7 +96,7 @@ jobs:
           # shellcheck disable=SC2086 # one argument per pollutant
           /tmp/panache/bin/panache-downscaling-maps --archive data/archive train \
             --pollutants $missing --out models
-          gh release upload "$RELEASE" models/*.lgb.txt
+          uv run panache-archive private upload --folder "$RELEASE" models/*.lgb.txt
           echo "Trained: $missing" >> "$GITHUB_STEP_SUMMARY"
       - name: Plan
         id: plan
@@ -147,12 +150,15 @@ jobs:
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
       - name: Fetch the archive's year and the models
         env:
           GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           scripts/fetch-for-maps.sh data/archive "${{ matrix.year }}"
-          gh release download "$RELEASE" --pattern "*.lgb.txt" --dir models
+          uv run panache-archive private download --folder "$RELEASE" --pattern "*.lgb.txt" --dir models
       - name: Build
         run: >
           /tmp/panache/bin/panache-downscaling-maps --archive data/archive
