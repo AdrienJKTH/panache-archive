@@ -7,6 +7,8 @@ run-name: >-
 # 70° W-89.5° E at 0.5°, read from ARCO-ERA5 (Google's public Zarr, anonymous) and published one
 # month at a time to the release winds-europe-v1 (~320 MB a month). One job a year, each month
 # published as soon as it is built, so a job started again builds only what is missing.
+# Every Monday it builds the months ERA5 has completed since (Panache's D118: the trajectories
+# follow the archive's last month).
 # Labelling a pull request `pilot-winds-build` builds the first two days of February 2021 as the
 # run's artifact.
 
@@ -16,6 +18,8 @@ on:
       years:
         description: "`all` (2013 to now), a year, or a span such as 2013-2025"
         default: all
+  schedule:
+    - cron: "13 7 * * 1"
   pull_request:
     types: [labeled]
 
@@ -32,7 +36,7 @@ env:
 jobs:
   plan:
     name: Plan
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -59,7 +63,7 @@ jobs:
       - name: Plan
         id: plan
         env:
-          YEARS: ${{ inputs.years }}
+          YEARS: ${{ inputs.years || 'all' }}
         run: |
           matrix=$(uv run panache-archive winds-plan --years "$YEARS" --built built.txt)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
