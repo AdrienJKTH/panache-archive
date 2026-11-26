@@ -6,7 +6,9 @@ name: Live stations
 # file of the service is downloaded once a pollutant (~2,000 points, a year's hours each), so a
 # range of days costs what a day costs. A release holds at most 1,000 assets: days older than
 # KEEP_DAYS are deleted, the validated hours replacing them in the autumn of the next year. It
-# runs each morning at 06:40 UTC.
+# runs each morning at 06:40 UTC and starts from the day after the last one every pollutant has
+# published when that is older than the day before yesterday (an outage), within CATCH_UP_DAYS.
+# Once published, it dispatches `Live innovations` over the same days.
 #
 # With `compare_year` and `openaq_locations`, it also scores OpenAQ's archive of the EEA's live
 # feed for that year against the validated days of `downscaling-europe-v1` at the same points
@@ -38,11 +40,13 @@ concurrency:
 
 permissions:
   contents: write # the release
+  actions: write # dispatches Live innovations
 
 env:
   RELEASE: stations-live-v1
   METADATA_COPY: eea-metadata.csv.gz
   KEEP_DAYS: 300
+  CATCH_UP_DAYS: 30
   GH_TOKEN: ${{ github.token }}
 
 defaults:
@@ -50,8 +54,46 @@ defaults:
     shell: bash
 
 jobs:
+  days:
+    name: The days
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      first: ${{ steps.days.outputs.first }}
+      last: ${{ steps.days.outputs.last }}
+    steps:
+      - name: The days
+        id: days
+        run: |
+          yesterday=$(date -u -d yesterday +%F)
+          if [[ "${{ github.event_name }}" == schedule ]]; then
+            first=$(date -u -d '2 days ago' +%F)
+            floor=$(date -u -d "$CATCH_UP_DAYS days ago" +%F)
+            names=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE" --paginate \
+              --jq '.assets[].name | select(startswith("stations-live-"))')
+            for pollutant in pm2_5 pm10 ozone; do
+              latest=$({ grep -oE "^stations-live-$pollutant-[0-9]{4}-[0-9]{2}-[0-9]{2}" <<< "$names" \
+                || true; } | sort | tail -1)
+              if [[ -n "$latest" ]]; then
+                next=$(date -u -d "${latest: -10} + 1 day" +%F)
+                if [[ "$next" < "$first" ]]; then first=$next; fi
+              fi
+            done
+            if [[ "$first" < "$floor" ]]; then first=$floor; fi
+            last=$yesterday
+          else
+            first="${{ inputs.first_day }}"
+            first=${first:-$yesterday}
+            last="${{ inputs.last_day }}"
+            last=${last:-$first}
+          fi
+          echo "first=$first" >> "$GITHUB_OUTPUT"
+          echo "last=$last" >> "$GITHUB_OUTPUT"
+          echo "Days built: $first to $last" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build ${{ matrix.pollutant }}
+    needs: days
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -70,12 +112,8 @@ jobs:
         run: gh release download "$RELEASE" --pattern "$METADATA_COPY" --dir cache || true
       - name: Build
         run: |
-          args=(--pollutant "${{ matrix.pollutant }}" --out dist --metadata-copy "cache/$METADATA_COPY")
-          if [[ "${{ github.event_name }}" == schedule ]]; then
-            args+=(--first-day "$(date -u -d '2 days ago' +%F)" --last-day "$(date -u -d yesterday +%F)")
-          fi
-          if [[ -n "${{ inputs.first_day }}" ]]; then args+=(--first-day "${{ inputs.first_day }}"); fi
-          if [[ -n "${{ inputs.last_day }}" ]]; then args+=(--last-day "${{ inputs.last_day }}"); fi
+          args=(--pollutant "${{ matrix.pollutant }}" --out dist --metadata-copy "cache/$METADATA_COPY"
+            --first-day "${{ needs.days.outputs.first }}" --last-day "${{ needs.days.outputs.last }}")
           if ! uv run panache-archive live-stations "${args[@]}" 2> build.log | tail -3; then
             tail -30 build.log
             exit 1
@@ -107,7 +145,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: build
+    needs: [days, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -137,6 +175,13 @@ jobs:
               gh release delete-asset "$RELEASE" "$asset" --yes
             fi
           done
+      - name: Live innovations over the same days
+        # Then `Live analysis` follows each successful run of `Live innovations`.
+        if: github.ref == 'refs/heads/main'
+        env:
+          FIRST: ${{ needs.days.outputs.first }}
+          LAST: ${{ needs.days.outputs.last }}
+        run: gh workflow run "Live innovations" --ref main -f first_day="$FIRST" -f last_day="$LAST"
 
   compare:
     name: Compare live and validated
