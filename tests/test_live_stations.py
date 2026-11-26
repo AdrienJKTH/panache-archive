@@ -1,10 +1,14 @@
+import email.message
+import gzip
 import json
+import urllib.error
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
+import pytest
 
 from panache_archive import live_stations, stations
 from panache_archive.build import read_metadata
@@ -166,3 +170,65 @@ def test_countries_can_be_chosen(tmp_path: Path) -> None:
     assert live_stations.asset_name(Pollutant.OZONE, date(2026, 1, 2)) == (
         "stations-live-ozone-2026-01-02.parquet"
     )
+
+
+def broken_metadata(read: stations.Read) -> stations.Read:
+    def answer(request: urllib.request.Request | str) -> bytes:
+        url = request if isinstance(request, str) else request.full_url
+        if url == stations.METADATA_URL:
+            raise urllib.error.HTTPError(url, 502, "Bad Gateway", email.message.Message(), None)
+        return read(request)
+
+    return answer
+
+
+def test_the_metadata_the_eea_serves_are_kept_in_a_copy(tmp_path: Path) -> None:
+    copy = tmp_path / "copy" / live_stations.METADATA_COPY
+
+    content = live_stations.read_station_metadata(copy, read=fake_service({}, []))
+
+    assert content == fake_service({}, [])(stations.METADATA_URL)
+    assert gzip.decompress(copy.read_bytes()) == content
+
+
+def test_the_copy_serves_when_the_eea_does_not_answer(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    copy = tmp_path / live_stations.METADATA_COPY
+    kept = metadata(point_row("LU", "SPO-LU1", "LU0001A", "6001"))
+    copy.write_bytes(gzip.compress(kept))
+
+    content = live_stations.read_station_metadata(copy, read=broken_metadata(fake_service({}, [])))
+
+    assert content == kept
+    assert "did not answer" in caplog.text
+
+
+def test_without_a_copy_the_eea_s_error_stands(tmp_path: Path) -> None:
+    with pytest.raises(urllib.error.HTTPError):
+        live_stations.read_station_metadata(
+            tmp_path / "none.csv.gz", read=broken_metadata(fake_service({}, []))
+        )
+
+
+def test_a_day_is_built_from_the_copy_when_the_eea_does_not_answer(tmp_path: Path) -> None:
+    files = {
+        "https://e/LU/a.parquet": station_file(
+            "SPO-LU1", hours(datetime(2026, 11, 10, 1), [9.0] * 24)
+        )
+    }
+    service = fake_service(files, [])
+    copy = tmp_path / live_stations.METADATA_COPY
+    live_stations.read_station_metadata(copy, read=service)
+
+    paths = live_stations.build(
+        Pollutant.PM2_5,
+        date(2026, 11, 10),
+        date(2026, 11, 10),
+        tmp_path / "dist",
+        read=broken_metadata(service),
+        downloads=1,
+        metadata_copy=copy,
+    )
+
+    assert [p.name for p in paths] == ["stations-live-pm2_5-2026-11-10.parquet"]
