@@ -280,7 +280,10 @@ def _live_stations(args: argparse.Namespace) -> int:
     countries = args.countries.split(",") if args.countries else None
     pollutant = stations.Pollutant(args.pollutant)
     out = Path(args.out)
-    for path in live_stations.build(pollutant, first, last, out, countries=countries):
+    copy = Path(args.metadata_copy) if args.metadata_copy else None
+    for path in live_stations.build(
+        pollutant, first, last, out, countries=countries, metadata_copy=copy
+    ):
         print(path)
     return 0
 
@@ -640,6 +643,11 @@ def _parser() -> argparse.ArgumentParser:
     living.add_argument("--last-day", help="the last UTC day, ISO (default: the first)")
     living.add_argument("--countries", help="two-letter codes, e.g. FR,DE (default: every one)")
     living.add_argument("--out", default="dist", help="where the assets are written")
+    living.add_argument(
+        "--metadata-copy",
+        help="a gzipped copy of the EEA's station metadata: written when the EEA answers, "
+        "read when it does not",
+    )
     living.set_defaults(run=_live_stations)
 
     comparing = commands.add_parser(

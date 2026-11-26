@@ -41,6 +41,7 @@ permissions:
 
 env:
   RELEASE: stations-live-v1
+  METADATA_COPY: eea-metadata.csv.gz
   KEEP_DAYS: 300
   GH_TOKEN: ${{ github.token }}
 
@@ -63,16 +64,29 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
+      - name: The metadata's copy
+        # The EEA's metadata file once answered 502 for days (discomap, 2026-11-23 on): the
+        # copy kept in the release serves then.
+        run: gh release download "$RELEASE" --pattern "$METADATA_COPY" --dir cache || true
       - name: Build
         run: |
-          args=(--pollutant "${{ matrix.pollutant }}" --out dist)
+          args=(--pollutant "${{ matrix.pollutant }}" --out dist --metadata-copy "cache/$METADATA_COPY")
           if [[ "${{ github.event_name }}" == schedule ]]; then
             args+=(--first-day "$(date -u -d '2 days ago' +%F)" --last-day "$(date -u -d yesterday +%F)")
           fi
           if [[ -n "${{ inputs.first_day }}" ]]; then args+=(--first-day "${{ inputs.first_day }}"); fi
           if [[ -n "${{ inputs.last_day }}" ]]; then args+=(--last-day "${{ inputs.last_day }}"); fi
-          uv run panache-archive live-stations "${args[@]}" 2> build.log | tail -3
+          if ! uv run panache-archive live-stations "${args[@]}" 2> build.log | tail -3; then
+            tail -30 build.log
+            exit 1
+          fi
           grep -cE "WARNING" build.log || true
+          if grep -q "metadata did not answer" build.log; then
+            echo "The EEA's metadata did not answer: the copy kept in the release served." \
+              >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ matrix.pollutant }}" == pm2_5 ]]; then
+            gh release upload "$RELEASE" "cache/$METADATA_COPY" --clobber
+          fi
           {
             echo "### ${{ matrix.pollutant }}"
             echo "Screening over every hour of the files: $(cat dist/screening-*.json)"

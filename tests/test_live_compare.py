@@ -235,9 +235,15 @@ def test_the_live_command_builds_yesterday_by_default(
     calls: list[tuple[object, ...]] = []
 
     def fake_build(
-        pollutant: Pollutant, first: object, last: object, out: Path, *, countries: object
+        pollutant: Pollutant,
+        first: object,
+        last: object,
+        out: Path,
+        *,
+        countries: object,
+        metadata_copy: Path | None,
     ) -> list[Path]:
-        calls.append((pollutant, first, last, countries))
+        calls.append((pollutant, first, last, countries, metadata_copy))
         return [out / "a.parquet"]
 
     with pytest.MonkeyPatch.context() as patch:
@@ -256,14 +262,17 @@ def test_the_live_command_builds_yesterday_by_default(
                 "FR,DE",
                 "--out",
                 str(tmp_path),
+                "--metadata-copy",
+                "cache/eea-metadata.csv.gz",
             ]
         )
 
     from datetime import date, timedelta
 
     yesterday = date.today() - timedelta(days=1)
+    copy = Path("cache/eea-metadata.csv.gz")
     assert calls == [
-        (Pollutant.PM10, yesterday, yesterday, None),
-        (Pollutant.OZONE, date(2026, 11, 1), date(2026, 11, 7), ["FR", "DE"]),
+        (Pollutant.PM10, yesterday, yesterday, None, None),
+        (Pollutant.OZONE, date(2026, 11, 1), date(2026, 11, 7), ["FR", "DE"], copy),
     ]
     assert "a.parquet" in capsys.readouterr().out

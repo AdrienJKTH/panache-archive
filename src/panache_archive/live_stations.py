@@ -14,6 +14,7 @@ not need. A day's values of every country make one asset per pollutant, of the v
 schema and metadata, each point's country in its own entry.
 """
 
+import gzip
 import json
 import logging
 import threading
@@ -67,8 +68,28 @@ the Canary Islands' dust of February 2020, ozone in the 1970s' photochemical smo
 broken instrument or a wrong unit goes over."""
 STUCK_HOURS: Final = 24
 """Consecutive hours of one same value that make it stuck: a whole day without a change."""
+METADATA_COPY: Final = "eea-metadata.csv.gz"
+"""The last metadata file the EEA served, gzipped, kept beside the days in their release: the
+stations change little, and the EEA's server (discomap) once answered 502 for days on end."""
 
 logger = logging.getLogger(__name__)
+
+
+def read_station_metadata(copy: Path | None, *, read: Read = web.read) -> bytes:
+    """The EEA's station metadata, fresh from its server and written to `copy` when one is given;
+    when the server does not answer, the copy kept from an earlier day, with a warning; else the
+    server's error."""
+    try:
+        content = read(_get(METADATA_URL))
+    except OSError as error:  # urllib's HTTPError and URLError, a timeout
+        if copy is None or not copy.exists():
+            raise
+        logger.warning("the EEA's metadata did not answer (%s): the copy kept is used", error)
+        return gzip.decompress(copy.read_bytes())
+    if copy is not None:
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(gzip.compress(content, mtime=0))
+    return content
 
 
 class Rule(StrEnum):
@@ -242,12 +263,14 @@ def build(
     countries: Sequence[str] | None = None,
     read: Read = web.read,
     downloads: int = DOWNLOADS,
+    metadata_copy: Path | None = None,
 ) -> list[Path]:
     """The assets of `pollutant` from `first_day` to `last_day`, over `countries` (default:
     every country the service has), and the screening's counts over the whole files, as
-    `screening-<pollutant>.json`."""
+    `screening-<pollutant>.json`. `metadata_copy` keeps the EEA's station metadata for the days
+    its server does not answer (`read_station_metadata`)."""
     screening = Screening(pollutant)
-    metadata = read(_get(METADATA_URL))
+    metadata = read_station_metadata(metadata_copy, read=read)
     chosen = countries if countries is not None else list_countries(read=read)
     parts = [
         read_country(c, pollutant, metadata, screening, read=read, downloads=downloads)
