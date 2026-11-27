@@ -1,0 +1,111 @@
+name: Pilot of the present's 1 km
+
+# Panache's P7, step 2: the 1 km maps of the present for the pollutants that passed the judging
+# (NO2 and ozone, D127), over one month before any catch-up. Each pollutant's job:
+#   1. gets the month's unverified station hours from the EEA (E2a), as the live stations are;
+#   2. trains the live model on CAMS's stream and IFS's weather, 6 March 2024 to 2025;
+#   3. checks the month at those stations, out of area, beside the stream;
+#   4. maps the month.
+# The model goes to the private dataset's folder downscaled-live-v1, the scores and the maps to
+# present-pilots/<run>: nothing Panache computes is in a release, an artifact, the log or the
+# summary (D114). The stream and IFS are read from Open-Meteo's public bucket on AWS.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      first:
+        description: "The month's first day, ISO"
+        default: "2026-10-01"
+      last:
+        description: "Its last day, ISO"
+        default: "2026-10-31"
+      pollutants:
+        description: "The pollutants, a JSON list"
+        default: '["nitrogen_dioxide", "ozone"]'
+
+permissions:
+  contents: read
+
+env:
+  FOLDER: present-pilots/${{ github.run_id }}  # a folder of the private dataset
+  MODELS: downscaled-live-v1  # another
+  FIRST: ${{ inputs.first }}
+  LAST: ${{ inputs.last }}
+
+jobs:
+  pilot:
+    name: Pilot, ${{ matrix.pollutant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        pollutant: ${{ fromJSON(inputs.pollutants) }}
+    env:
+      POLLUTANT: ${{ matrix.pollutant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Fetch the stations, the fixed layers and the station metadata kept
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs \
+            --pattern "stations-*-$POLLUTANT.parquet" --pattern "static-europe-1km.npz"
+          gh release download stations-live-v1 --repo "$GITHUB_REPOSITORY" --dir kept \
+            --pattern eea-metadata.csv.gz
+      - name: The month's station hours
+        run: >
+          uv run panache-archive live-stations --pollutant "$POLLUTANT" --first-day "$FIRST"
+          --last-day "$LAST" --metadata-copy kept/eea-metadata.csv.gz --out live
+      - name: Train
+        run: |
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -v -o train.txt /tmp/panache/bin/panache-downscaling-present-maps train \
+            --europe inputs --pollutant "$POLLUTANT" --out models
+          grep -E "Elapsed|Maximum resident" train.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the model, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$MODELS" models/*
+      - name: Check the month at the stations
+        run: |
+          mkdir -p out
+          # The tables are printed to a file: the log of a public repository is public.
+          /usr/bin/time -v -o check.txt /tmp/panache/bin/panache-downscaling-present-maps check \
+            --europe inputs --pollutant "$POLLUTANT" --live live --first "$FIRST" --last "$LAST" \
+            --out "out/check-$POLLUTANT.json" > "out/check-$POLLUTANT.md"
+          grep -E "Elapsed|Maximum resident" check.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the scores, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$FOLDER" out/*
+      - name: Map the month
+        run: |
+          /usr/bin/time -v -o map.txt /tmp/panache/bin/panache-downscaling-present-maps map \
+            --europe inputs --pollutant "$POLLUTANT" --models models --first "$FIRST" \
+            --last "$LAST" --out maps | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E "Elapsed|Maximum resident" map.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the maps, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$FOLDER" maps/*
