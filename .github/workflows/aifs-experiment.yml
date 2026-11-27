@@ -1,0 +1,123 @@
+name: AIFS experiment
+
+# Panache's P6, E1: does AIFS forecast PM2.5 better than IFS? A job per month reads AIFS Single's
+# 00 UTC runs of 22 February to 30 December 2025 at the experiment's 21 cities from ECMWF's open
+# data on AWS (~105 MB a run, ~31 GB in all; `experiments/aifs_points.py`), then Panache's
+# `panache-aifs-experiment` feeds them to D98's LightGBM and scores them against IFS's.
+#
+# What is read and what comes out is Panache's: into the private dataset's `aifs-experiment-v1`
+# (`panache_archive.private`), never to a release, an artifact, the log or the summary.
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to score with"
+        default: main
+
+permissions:
+  contents: read
+
+env:
+  SOURCE: forecast-experiment-v1
+  RELEASE: aifs-experiment-v1  # a folder of the private dataset
+  PANACHE_REF: ${{ inputs.panache || 'main' }}
+
+jobs:
+  points:
+    name: Points ${{ matrix.first }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {first: "2025-02-22", last: "2025-03-31"}
+          - {first: "2025-04-01", last: "2025-04-30"}
+          - {first: "2025-05-01", last: "2025-05-31"}
+          - {first: "2025-06-01", last: "2025-06-30"}
+          - {first: "2025-07-01", last: "2025-07-31"}
+          - {first: "2025-08-01", last: "2025-08-31"}
+          - {first: "2025-09-01", last: "2025-09-30"}
+          - {first: "2025-10-01", last: "2025-10-31"}
+          - {first: "2025-11-01", last: "2025-11-30"}
+          - {first: "2025-12-01", last: "2025-12-30"}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ env.PANACHE_REF }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: The experiment's places
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+          /tmp/panache/bin/python - <<'EOF'
+          import json
+          from pathlib import Path
+          from panache.forecast.places import PLACES
+          places = [{"name": p.name, "lat": p.point.lat, "lon": p.point.lon} for p in PLACES]
+          Path("places.json").write_text(json.dumps(places))
+          EOF
+      - name: Read AIFS's runs
+        env:
+          FIRST: ${{ matrix.first }}
+          LAST: ${{ matrix.last }}
+        run: |
+          set -o pipefail
+          uv run --script experiments/aifs_points.py --first "$FIRST" --last "$LAST" \
+            --places places.json --out "out/aifs-$FIRST.parquet" 2>&1 | tee points.log
+          grep -E "runs read" points.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the points, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FIRST: ${{ matrix.first }}
+        run: |
+          uv sync --locked
+          uv run panache-archive private upload --folder "$RELEASE" "out/aifs-$FIRST.parquet"
+
+  score:
+    name: Score
+    needs: points
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ env.PANACHE_REF }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend and the archive's tools
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+          uv sync --locked
+      - name: Fetch the table and the points
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run panache-archive private download --folder "$SOURCE" \
+            --pattern forecast-experiment.parquet --dir inputs
+          uv run panache-archive private download --folder "$RELEASE" \
+            --pattern "aifs-*.parquet" --dir inputs/aifs
+      - name: Score
+        run: |
+          # The scores are Panache's: into the private dataset, not into the public log.
+          mkdir -p out
+          /tmp/panache/bin/panache-aifs-experiment --data inputs/forecast-experiment.parquet \
+            --aifs inputs/aifs --out out/aifs-scores.json > out/aifs-summary.md
+          echo "Scored" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the scores, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$RELEASE" out/aifs-scores.json out/aifs-summary.md
