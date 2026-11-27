@@ -269,7 +269,11 @@ def _private_purge(args: argparse.Namespace) -> int:
 def _stations(args: argparse.Namespace) -> int:
     last_year = args.last_year or date.today().year - 1
     pollutant = stations.Pollutant(args.pollutant)
-    print(stations.build(args.country, pollutant, Path(args.out), last_year=last_year))
+    copy = Path(args.metadata_copy) if args.metadata_copy else None
+    path = stations.build(
+        args.country, pollutant, Path(args.out), last_year=last_year, metadata_copy=copy
+    )
+    print(path)
     return 0
 
 
@@ -631,13 +635,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     stationing.add_argument("--last-year", type=int, help="the last year kept (default: last year)")
     stationing.add_argument("--out", default="dist", help="where the asset is written")
+    stationing.add_argument(
+        "--metadata-copy", help="the EEA's station metadata kept, read when its server fails"
+    )
     stationing.set_defaults(run=_stations)
 
     living = commands.add_parser(
         "live-stations", help="build days of daily values at Europe's stations, from the EEA (E2a)"
     )
     living.add_argument(
-        "--pollutant", required=True, choices=[p.value for p in live_stations.POLLUTANTS]
+        "--pollutant", required=True, choices=[p.value for p in live_stations.BUILDABLE]
     )
     living.add_argument("--first-day", help="the first UTC day, ISO (default: yesterday)")
     living.add_argument("--last-day", help="the last UTC day, ISO (default: the first)")

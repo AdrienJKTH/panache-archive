@@ -1,0 +1,111 @@
+name: ETEX
+run-name: >-
+  ${{ github.event_name == 'pull_request' && github.event.pull_request.title || 'ETEX' }}
+
+# Builds ERA5's winds and boundary layer for October 1994, the month of ETEX-1 (the European
+# tracer experiment: PMCH released at Monterfil, Brittany, on 23-24 October 1994), so that
+# Panache's trajectories and footprints can be scored against the tracer's measurements
+# (Panache's D112, step 2 of its cross-validation). The files are those of winds-europe-v1 and
+# surface-europe-v1, in the same format, published to a release of their own, etex-v1, so that
+# the product's archives keep holding 2013 onwards only. Beside them, the tracer's measurements
+# and HYSPLIT's scores as NOAA ARL's DATEM archive serves them (US government work, public
+# domain; Adrien's word of 2026-11-27 covers these files only). Run by hand; a run again rebuilds
+# and replaces every file (~320 and ~85 MB, and ~200 kB from DATEM).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: etex
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: etex-v1
+  YEAR: 1994
+  MONTH: 10
+
+jobs:
+  build:
+    name: ${{ matrix.kind }} 1994-10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [winds, surface]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "ERA5 over Europe in October 1994, for ETEX-1"
+          --notes-file docs/etex-release.md
+          || gh release view "$RELEASE" > /dev/null
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KIND: ${{ matrix.kind }}
+        run: |
+          set -o pipefail
+          start=$SECONDS
+          path=$(uv run panache-archive "$KIND-build" --year "$YEAR" --month "$MONTH" --out dist \
+            | tail -1)
+          gh release upload "$RELEASE" "$path" --clobber
+          echo "| $(basename "$path") | $(du -m "$path" | cut -f1) MB |" \
+            "$((SECONDS - start)) s |" >> "$GITHUB_STEP_SUMMARY"
+
+  datem:
+    name: DATEM's ETEX-1 files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "ERA5 over Europe in October 1994, for ETEX-1"
+          --notes-file docs/etex-release.md
+          || gh release view "$RELEASE" > /dev/null
+      - name: Fetch and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATEM: https://www.arl.noaa.gov/documents/datem/exp_data/etex
+          RESULTS: https://www.arl.noaa.gov/hysplit/datem-tracer-evaluation/hysplit-evaluation-results-using-datem/
+        # arl.noaa.gov answers curl's default agent with 403: the agent names this repository.
+        run: |
+          set -o pipefail
+          fetch() {
+            curl --fail --silent --show-error --location --max-filesize 5000000 --retry 3 \
+              --user-agent "panache-archive (+https://github.com/$GITHUB_REPOSITORY)" \
+              --dump-header "$1.headers" --output "$1" "$2" \
+              || { cat "$1.headers"; return 1; }
+            rm "$1.headers"
+          }
+          mkdir datem
+          for name in meas-t1.txt stations.txt readme.txt; do
+            fetch "datem/etex-$name" "$DATEM/$name"
+          done
+          fetch datem/hysplit-datem-results.html "$RESULTS"
+          echo "| File | Bytes | SHA-256 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for path in datem/*; do
+            echo "| $(basename "$path") | $(stat -c %s "$path") |" \
+              "$(sha256sum "$path" | cut -c1-16) |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          gh release upload "$RELEASE" datem/* --clobber

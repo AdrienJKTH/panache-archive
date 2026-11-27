@@ -148,6 +148,12 @@ gh workflow run downscaling-europe.yml
 
 Labelling a pull request `pilot-downscaling-europe` builds two countries' PM2.5 and the whole fixed layers as the run's artifacts.
 
+Beyond those 18 countries (Panache's P7), the [`Downscaling inputs, domain`](.github/workflows/downscaling-domain.yml) workflow builds the release `downscaling-domain-v1`: the same stations' assets for the 21 other countries with the EEA's stations (TR, RO, GR, SK, MK, BA, BG, HU, RS, HR, IS, EE, LV, LT, SI, CY, MT, AL, ME, XK, AD), and `static-domain-1km.npz`, the four layers on a 1/120° grid over the whole CAMS Europe domain (30-72° N, 25° W-45° E, 5,040 by 8,400 cells). It is a release of its own, so that the 18 countries' learning data stay as they are. No map is built from it before the model is judged there.
+
+```bash
+gh workflow run downscaling-domain.yml
+```
+
 ## Domain maps
 
 Panache's map colourings over the whole CAMS Europe domain (Panache's D78), every day from 2013, in the release `maps-europe-v1`: one `map-<layer>-<year>.days` file per colouring and year, ~2 to 20 KB a day, read a day at a time over HTTP ranges (the format of the downscaled maps below, classes stored at a step of 1):
@@ -227,6 +233,18 @@ Before towns of 2026 (Panache's D81), the [`Stream experiment`](.github/workflow
 
 ```bash
 gh workflow run stream-experiment.yml -f panache=main
+```
+
+Before 1 km maps of today (Panache's P7), the [`Downscaling the present`](.github/workflows/downscaling-present.yml) workflow judges the 1 km model at the 2025 stations of `downscaling-europe-v1`: on the reanalysis, fed CAMS's daily stream, trained on the stream with ERA5, and trained on it with IFS 0.25°'s weather from the same bucket, one job a pollutant. Its tables and scores go to the private dataset (`present-runs/<run>`), not to the log.
+
+```bash
+gh workflow run downscaling-present.yml -f panache=main
+```
+
+Before the catch-up, the [`Pilot of the present's 1 km`](.github/workflows/present-pilot.yml) workflow trains the live models of the pollutants that passed (NO2 and ozone), checks a month at the EEA's unverified hours of that month and maps it; models, scores and maps go to the private dataset only.
+
+```bash
+gh workflow run present-pilot.yml -f panache=main -f first=2026-10-01 -f last=2026-10-31
 ```
 
 ## The compute Space

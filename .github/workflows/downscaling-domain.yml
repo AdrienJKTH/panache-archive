@@ -1,0 +1,131 @@
+name: Downscaling inputs, domain
+
+# Builds what Panache's downscaling needs to be judged beyond the 18 countries (Panache's P7) into
+# the release downscaling-domain-v1: each pollutant's daily values at the stations of the 21 other
+# countries with the EEA's validated hours (read and dropped), every station type kept, and the
+# 1 km fixed layers over the whole CAMS Europe domain (GHS-POP, GHS-BUILT-S, the Copernicus DEM and
+# Natural Earth's land of the countries mapped and to be judged, cut by GDAL). A release of its own:
+# the 18 countries' learning data, downscaling-europe-v1, stay as they are. Nothing is judged or
+# mapped here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: "The EEA's country codes, a JSON list"
+        default: >-
+          ["TR","RO","GR","SK","MK","BA","BG","HU","RS","HR","IS","EE","LV","LT","SI","CY","MT","AL","ME","XK","AD"]
+      pollutants:
+        description: "The pollutants' stations to build, a JSON list"
+        default: '["pm2_5", "nitrogen_dioxide", "pm10", "ozone"]'
+      static:
+        description: "Build the 1 km fixed layers too"
+        type: boolean
+        default: true
+
+concurrency:
+  group: downscaling-domain
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: downscaling-domain-v1
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "Downscaling inputs over the whole domain"
+          --notes-file docs/downscaling-domain-release.md --latest=false
+
+  stations:
+    name: Stations, ${{ matrix.country }} ${{ matrix.pollutant }}
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        country: ${{ fromJSON(inputs.countries) }}
+        pollutant: ${{ fromJSON(inputs.pollutants) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Fetch the station metadata kept
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The EEA's server of the metadata answers 502 for days on end (2026-11-27 again): the
+        # copy the live stations keep stands in for it.
+        run: gh release download stations-live-v1 --pattern eea-metadata.csv.gz --dir kept
+      - name: Build
+        env:
+          COUNTRY: ${{ matrix.country }}
+          POLLUTANT: ${{ matrix.pollutant }}
+        run: >
+          uv run panache-archive stations --country "$COUNTRY" --pollutant "$POLLUTANT" --out dist
+          --metadata-copy kept/eea-metadata.csv.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # A country without a series of the pollutant gives an empty asset, which a reader
+        # refuses: nothing is published for it.
+        run: |
+          rows=$(uv run python -c 'import glob, pyarrow.parquet as pq
+          print(sum(pq.read_metadata(path).num_rows for path in glob.glob("dist/*.parquet")))')
+          if [ "$rows" = 0 ]; then
+            echo "No series: nothing published." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh release upload "$RELEASE" dist/*.parquet --clobber
+          fi
+
+  static:
+    name: Fixed layers
+    needs: release
+    if: inputs.static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Install GDAL
+        run: sudo apt-get update -q && sudo apt-get install -y -q gdal-bin
+      - name: Cut the sources onto the grid
+        env:
+          GDAL_DISABLE_READDIR_ON_OPEN: EMPTY_DIR
+          CPL_VSIL_CURL_ALLOWED_EXTENSIONS: .tif
+          GDAL_CACHEMAX: "2048"
+        run: |
+          df -h "$RUNNER_TEMP" | tail -1
+          scripts/static-layers.sh "$RUNNER_TEMP/layers" domain
+      - name: Build
+        run: uv run panache-archive static --layers "$RUNNER_TEMP/layers" --region domain --out dist
+      - name: Report the layers' size
+        run: du -sh "$RUNNER_TEMP/layers" dist/* | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.npz --clobber

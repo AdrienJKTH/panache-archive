@@ -23,6 +23,7 @@ asset's metadata, one entry per sampling point of the table.
 """
 
 import csv
+import gzip
 import io
 import json
 import logging
@@ -71,6 +72,10 @@ USER_AGENT: Final = "panache-archive (+https://github.com/AdrienJKTH/panache-arc
 """discomap.eea.europa.eu answers 403 to urllib's own User-Agent."""
 """Files downloaded at once."""
 VALUE_DECIMALS: Final = 2
+
+METADATA_COPY: Final = "eea-metadata.csv.gz"
+"""The last metadata file the EEA served, gzipped, kept beside the days in their release: the
+stations change little, and the EEA's server (discomap) once answered 502 for days on end."""
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +342,23 @@ def read_points(content: bytes, country: str, pollutant: Pollutant) -> dict[str,
     return points
 
 
+def read_station_metadata(copy: Path | None, *, read: Read = web.read) -> bytes:
+    """The EEA's station metadata, fresh from its server and written to `copy` when one is given;
+    when the server does not answer, the copy kept from an earlier day, with a warning; else the
+    server's error."""
+    try:
+        content = read(_get(METADATA_URL))
+    except OSError as error:  # urllib's HTTPError and URLError, a timeout
+        if copy is None or not copy.exists():
+            raise
+        logger.warning("the EEA's metadata did not answer (%s): the copy kept is used", error)
+        return gzip.decompress(copy.read_bytes())
+    if copy is not None:
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(gzip.compress(content, mtime=0))
+    return content
+
+
 def asset_name(country: str, pollutant: Pollutant) -> str:
     return f"stations-{country.lower()}-{pollutant}.parquet"
 
@@ -349,17 +371,19 @@ def build(
     last_year: int,
     read: Read = web.read,
     downloads: int = DOWNLOADS,
+    metadata_copy: Path | None = None,
 ) -> Path:
     """Every daily value of `pollutant` at `country`'s stations from 2013 to `last_year`, as
     one Parquet asset: one row per sampling point and day, the points in its metadata. The column
     `mean` holds the pollutant's statistic, named in the metadata.
 
     Points the metadata do not describe are left out, since a mean without a position is of no
-    use to a map; they are logged.
+    use to a map; they are logged. `metadata_copy` is read when the EEA's server does not give
+    the metadata (`read_station_metadata`).
     """
     years = range(FIRST_YEAR, last_year + 1)
     urls = list_files(country, pollutant, years, read=read)
-    points = read_points(read(_get(METADATA_URL)), country, pollutant)
+    points = read_points(read_station_metadata(metadata_copy, read=read), country, pollutant)
     with ThreadPoolExecutor(max_workers=downloads) as pool:
         found = list(pool.map(lambda url: daily_means(read(_get(url)), pollutant.statistic), urls))
     last_day = np.datetime64(date(last_year, 12, 31), "D")

@@ -1,0 +1,83 @@
+name: Downscaling the present
+
+# Panache's P7, step 1: can the 1 km downscaling draw the present? At the 2025 background stations
+# of downscaling-europe-v1's 18 countries, out of area, the model on CAMS's reanalysis and ERA5,
+# the same fed CAMS's daily stream, a model trained on the stream with ERA5, and one trained on
+# the stream with IFS 0.25°'s weather, also out of country (`panache-downscaling-present`).
+# It reads the reanalysis and ERA5 of the domain's archives, and the stream and IFS from
+# Open-Meteo's public bucket on AWS Open Data (~35 GB a pollutant, estimated), one pollutant a job.
+#
+# The tables and scores are what Panache learns (D114): they go to the private dataset's folder
+# present-runs/<run>, never to a release, an artifact, the log or the summary, which only say how
+# long it took and how much memory.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      pollutants:
+        description: "The pollutants to judge, a JSON list"
+        default: '["pm2_5", "nitrogen_dioxide", "pm10", "ozone"]'
+
+permissions:
+  contents: read
+
+env:
+  FOLDER: present-runs/${{ github.run_id }}  # a folder of the private dataset
+
+jobs:
+  judge:
+    name: Judge, ${{ matrix.pollutant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        pollutant: ${{ fromJSON(inputs.pollutants) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Fetch the stations and the fixed layers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLLUTANT: ${{ matrix.pollutant }}
+        run: >
+          gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs
+          --pattern "stations-*-$POLLUTANT.parquet" --pattern "static-europe-1km.npz"
+      - name: Judge
+        env:
+          POLLUTANT: ${{ matrix.pollutant }}
+        run: |
+          mkdir -p out
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          # The tables are printed to a file: the log of a public repository is public.
+          /usr/bin/time -v -o time.txt \
+            /tmp/panache/bin/panache-downscaling-present --europe inputs \
+            --pollutants "$POLLUTANT" --out "out/present-$POLLUTANT.json" \
+            > "out/present-$POLLUTANT.md"
+          {
+            echo "Judged $POLLUTANT; the scores are in the private dataset's $FOLDER."
+            grep -E "Elapsed|Maximum resident" time.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the scores, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$FOLDER" out/*
