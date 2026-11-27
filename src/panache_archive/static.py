@@ -3,7 +3,8 @@ Panache's downscaling (Panache's D74).
 
 The grid is 1/120° inside a region's box, twelve by twelve cells in each 0.1° cell of CAMS, whose
 edges it shares: France's (41 to 51.5° N, 5.5° W to 10° E), 1,260 by 1,860 cells, or Europe's
-(35 to 71.5° N, 11° W to 32° E), 4,380 by 5,160 cells.
+(35 to 71.5° N, 11° W to 32° E), 4,380 by 5,160 cells, or the whole CAMS Europe domain's (30 to
+72° N, 25° W to 45° E), 5,040 by 8,400 cells.
 
 - **Population** (inhabitants per km²): JRC's GHS-POP, epoch 2020, release 2023A, on this very
   grid (`GHS_POP_E2020_GLOBE_R2023A_4326_30ss`): residents per cell, divided by the cell's area.
@@ -13,7 +14,8 @@ edges it shares: France's (41 to 51.5° N, 5.5° W to 10° E), 1,260 by 1,860 ce
   NaN where it has no tile (the sea).
 - **Land** (share of the cell): Natural Earth's land, lakes taken out, at 1:10 million (public
   domain), burnt on cells ten times finer and averaged: what the maps keep (the sea is not drawn).
-  Over Europe, only the land of the countries mapped, so that the maps stop at their borders.
+  Over Europe, only the land of the countries mapped, so that the maps stop at their borders;
+  over the domain, of those and of the countries to be judged next (Panache's P7).
 
 GDAL cuts and averages the sources onto the grid (`scripts/static-layers.sh`); this module reads
 its four GeoTIFFs, checks they lie on the grid, and writes one `.npz` asset.
@@ -31,7 +33,7 @@ import numpy as np
 import tifffile
 from numpy.typing import NDArray
 
-from panache_archive.grid import DOWNSCALED_EUROPE, FRANCE, Box
+from panache_archive.grid import DOWNSCALED_DOMAIN, DOWNSCALED_EUROPE, FRANCE, Box
 
 FloatArray = NDArray[np.float64]
 
@@ -99,12 +101,18 @@ class Region:
 
 FRANCE_1KM: Final = Grid(FRANCE, CELLS_PER_DEGREE)
 EUROPE_1KM: Final = Grid(DOWNSCALED_EUROPE, CELLS_PER_DEGREE)
+DOMAIN_1KM: Final = Grid(DOWNSCALED_DOMAIN, CELLS_PER_DEGREE)
 REGIONS: Final[Mapping[str, Region]] = {
     "france": Region(FRANCE_1KM, "static-fr-1km.npz", "all land"),
     "europe": Region(
         EUROPE_1KM,
         "static-europe-1km.npz",
         "the countries mapped, scripts/static-layers.sh's list",
+    ),
+    "domain": Region(
+        DOMAIN_1KM,
+        "static-domain-1km.npz",
+        "the countries mapped and those to be judged, scripts/static-layers.sh's list",
     ),
 }
 

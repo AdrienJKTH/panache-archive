@@ -39,6 +39,9 @@ FRANCE: Final = Box(south=41.0, north=51.5, west=-5.5, east=10.0)
 DOWNSCALED_EUROPE: Final = Box(south=35.0, north=71.5, west=-11.0, east=32.0)
 """Where Panache's downscaling reaches beyond France: mainland Europe's western and northern
 countries, from Ireland to Finland, on the edges of CAMS's cells since 2020."""
+DOWNSCALED_DOMAIN: Final = Box(south=30.0, north=72.0, west=-25.0, east=45.0)
+"""The whole CAMS Europe domain, on its cells' edges: where Panache's downscaling may reach
+beyond those countries, once judged there (Panache's P7)."""
 EUROPE: Final = Box(south=29.9, north=72.1, west=-25.1, east=45.1)
 """The whole CAMS Europe grid, 30-72° N and 25° W-45° E, edge cells of both grids included:
 420 by 700 cells since 2020."""
