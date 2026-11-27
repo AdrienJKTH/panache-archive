@@ -229,6 +229,12 @@ Before towns of 2026 (Panache's D81), the [`Stream experiment`](.github/workflow
 gh workflow run stream-experiment.yml -f panache=main
 ```
 
+Before 1 km maps of today (Panache's P7), the [`Downscaling the present`](.github/workflows/downscaling-present.yml) workflow judges the 1 km model at the 2025 stations of `downscaling-europe-v1`: on the reanalysis, fed CAMS's daily stream, trained on the stream with ERA5, and trained on it with IFS 0.25°'s weather from the same bucket, one job a pollutant. Its tables and scores go to the private dataset (`present-runs/<run>`), not to the log.
+
+```bash
+gh workflow run downscaling-present.yml -f panache=main
+```
+
 ## The compute Space
 
 Panache's button "compute in high definition" calls a free Hugging Face Space, [`adrien4916/panache-compute`](https://huggingface.co/spaces/adrien4916/panache-compute), which computes a view at ~100 m on request (Panache's D74). A public Space's image can be pulled by anyone, and Panache's repository is private, so the [`Compute Space`](.github/workflows/space.yml) workflow (`panache-archive space`) deploys only what `panache.compute_app` and `panache.fetch_archive` import, worked out from their imports, with the Dockerfile and card of [`space/`](space/). The Space builds itself and its data from this repository's public releases.
