@@ -87,15 +87,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DATEM: https://www.arl.noaa.gov/documents/datem/exp_data/etex
           RESULTS: https://www.arl.noaa.gov/hysplit/datem-tracer-evaluation/hysplit-evaluation-results-using-datem/
+        # arl.noaa.gov answers curl's default agent with 403: the agent names this repository.
         run: |
           set -o pipefail
+          fetch() {
+            curl --fail --silent --show-error --location --max-filesize 5000000 --retry 3 \
+              --user-agent "panache-archive (+https://github.com/$GITHUB_REPOSITORY)" \
+              --dump-header "$1.headers" --output "$1" "$2" \
+              || { cat "$1.headers"; return 1; }
+            rm "$1.headers"
+          }
           mkdir datem
           for name in meas-t1.txt stations.txt readme.txt; do
-            curl --fail --silent --show-error --location --max-filesize 5000000 \
-              --output "datem/etex-$name" "$DATEM/$name"
+            fetch "datem/etex-$name" "$DATEM/$name"
           done
-          curl --fail --silent --show-error --location --max-filesize 5000000 \
-            --output datem/hysplit-datem-results.html "$RESULTS"
+          fetch datem/hysplit-datem-results.html "$RESULTS"
           echo "| File | Bytes | SHA-256 |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
           for path in datem/*; do
