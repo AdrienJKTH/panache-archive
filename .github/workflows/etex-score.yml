@@ -1,0 +1,70 @@
+name: ETEX score
+
+# Scores Panache's particles and trajectories against ETEX-1 (Panache's D112, step 2): Panache's
+# `panache-etex` runs D86's particles forward from Monterfil through `etex-v1`'s ERA5 of October
+# 1994 (built by the `ETEX` workflow), compares them with DATEM's measurements of the tracer
+# and writes the report (DATEM's statistics and the arrivals) as the run's summary and artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      particles:
+        description: "Particles let out over the release"
+        default: "200000"
+      seed:
+        description: "The random walk's seed"
+        default: "1994"
+
+concurrency:
+  group: etex-score-${{ inputs.panache }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  score:
+    name: Score
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Take etex-v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download etex-v1 --repo "$GITHUB_REPOSITORY" --dir etex
+      - name: Score
+        env:
+          PARTICLES: ${{ inputs.particles }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          set -o pipefail
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          /usr/bin/time -f "%e s, %M kB" -o took.txt /tmp/panache/bin/panache-etex --data etex \
+            --particles "$PARTICLES" --seed "$SEED" --out etex.md > /dev/null
+          cat etex.md >> "$GITHUB_STEP_SUMMARY"
+          echo "Ran in $(cat took.txt)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: etex-score
+          path: etex.md
+          if-no-files-found: ignore
