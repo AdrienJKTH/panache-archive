@@ -43,7 +43,7 @@ CONCURRENCY = 8
 logger = logging.getLogger("aifs_points")
 
 
-class Missing(Exception):
+class MissingError(Exception):
     """The run lacks a file or a field."""
 
 
@@ -56,7 +56,7 @@ def get(http: httpx.Client, url: str, byte_range: tuple[int, int] | None = None)
         try:
             response = http.get(url, headers=headers)
             if response.status_code == 404:
-                raise Missing(url)
+                raise MissingError(url)
             response.raise_for_status()
             if byte_range is not None and len(response.content) != byte_range[1]:
                 raise httpx.TransportError(f"{url}: {len(response.content)} bytes")
@@ -126,14 +126,16 @@ def fetch_step(http: httpx.Client, day: date, step: int) -> dict[str, bytes]:
     }
     missing = [p for p in PARAMS if p not in where]
     if missing:
-        raise Missing(f"{stem} lacks {missing}")
+        raise MissingError(f"{stem} lacks {missing}")
     return {p: get(http, f"{stem}.grib2", where[p]) for p in PARAMS}
 
 
 def run_rows(pool: ThreadPoolExecutor, http: httpx.Client, grid: Grid, day: date) -> list[dict]:
     rows = []
     # Decoded here, one at a time: ecCodes is not told to be shared between threads.
-    for step, messages in zip(STEPS, pool.map(lambda s: fetch_step(http, day, s), STEPS)):
+    for step, messages in zip(
+        STEPS, pool.map(lambda s: fetch_step(http, day, s), STEPS), strict=True
+    ):
         for param, raw in messages.items():
             units, values = grid.values(raw)
             rows += [
@@ -167,7 +169,7 @@ def main() -> None:
         for day in days:
             try:
                 rows += run_rows(pool, http, grid, day)
-            except Missing as error:
+            except MissingError as error:
                 logger.warning("run of %s left out: %s", day, error)
                 left_out.append(day)
             else:
