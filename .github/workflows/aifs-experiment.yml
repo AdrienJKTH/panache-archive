@@ -35,7 +35,16 @@ jobs:
       max-parallel: 4
       matrix:
         include:
-          - {first: "2025-03-01", last: "2025-03-02"}
+          - {first: "2025-02-22", last: "2025-03-31"}
+          - {first: "2025-04-01", last: "2025-04-30"}
+          - {first: "2025-05-01", last: "2025-05-31"}
+          - {first: "2025-06-01", last: "2025-06-30"}
+          - {first: "2025-07-01", last: "2025-07-31"}
+          - {first: "2025-08-01", last: "2025-08-31"}
+          - {first: "2025-09-01", last: "2025-09-30"}
+          - {first: "2025-10-01", last: "2025-10-31"}
+          - {first: "2025-11-01", last: "2025-11-30"}
+          - {first: "2025-12-01", last: "2025-12-30"}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -76,7 +85,6 @@ jobs:
           uv run panache-archive private upload --folder "$RELEASE" "out/aifs-$FIRST.parquet"
 
   score:
-    if: false  # pilot
     name: Score
     needs: points
     runs-on: ubuntu-24.04
@@ -97,6 +105,10 @@ jobs:
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
           uv sync --locked
+      - name: Drop the pilot's points
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private delete --folder "$RELEASE" aifs-2025-03-01.parquet || true
       - name: Fetch the table and the points
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
