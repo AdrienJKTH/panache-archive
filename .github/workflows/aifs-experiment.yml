@@ -13,9 +13,6 @@ on:
       panache:
         description: "The commit, branch or tag of AdrienJKTH/panache to score with"
         default: main
-  # The first run, before this file reached the default branch.
-  push:
-    branches: [experiment/aifs]
 
 permissions:
   contents: read
@@ -23,7 +20,7 @@ permissions:
 env:
   SOURCE: forecast-experiment-v1
   RELEASE: aifs-experiment-v1  # a folder of the private dataset
-  PANACHE_REF: ${{ inputs.panache || 'feat/aifs-experiment' }}
+  PANACHE_REF: ${{ inputs.panache || 'main' }}
 
 jobs:
   points:
@@ -105,10 +102,6 @@ jobs:
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
           uv sync --locked
-      - name: Drop the pilot's points
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: uv run panache-archive private delete --folder "$RELEASE" aifs-2025-03-01.parquet || true
       - name: Fetch the table and the points
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
