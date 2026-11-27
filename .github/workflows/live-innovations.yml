@@ -44,7 +44,7 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read # the fields' artifacts
+  actions: write # the fields' artifacts, and dispatching Live analysis
 
 env:
   RELEASE: innovations-live-v1
@@ -154,3 +154,13 @@ jobs:
           if [[ -n "$files" ]]; then
             uv run panache-archive private upload --folder "live-innovations-runs/${{ github.run_id }}-$POLLUTANT" $files
           fi
+
+  analysis:
+    name: Live analysis next
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch Live analysis
+        run: gh workflow run "Live analysis" --repo "$GITHUB_REPOSITORY" --ref main
