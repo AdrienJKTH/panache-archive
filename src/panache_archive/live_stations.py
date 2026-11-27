@@ -57,15 +57,18 @@ ATTRIBUTION: Final = (
     "measurements of the national networks reported under Directive 2008/50/EC."
 )
 POLLUTANTS: Final = (Pollutant.PM2_5, Pollutant.PM10, Pollutant.OZONE)
-"""The pollutants Panache's analysis corrects (D90)."""
+"""The pollutants Panache's analysis corrects (D90), built every day."""
+BUILDABLE: Final = (*POLLUTANTS, Pollutant.NITROGEN_DIOXIDE)
+"""And NO2, on demand: its stations check the 1 km maps of the present (Panache's P7)."""
 CEILINGS: Final[Mapping[Pollutant, float]] = {
     Pollutant.PM2_5: 2000.0,
     Pollutant.PM10: 5000.0,
     Pollutant.OZONE: 800.0,
+    Pollutant.NITROGEN_DIOXIDE: 1600.0,
 }
 """Hourly values no air in Europe reaches, µg/m³: about twice the highest hours of record (PM10 in
-the Canary Islands' dust of February 2020, ozone in the 1970s' photochemical smog), so that only a
-broken instrument or a wrong unit goes over."""
+the Canary Islands' dust of February 2020, ozone in the 1970s' photochemical smog, NO2 in
+London's smog of December 1991), so that only a broken instrument or a wrong unit goes over."""
 STUCK_HOURS: Final = 24
 """Consecutive hours of one same value that make it stuck: a whole day without a change."""
 METADATA_COPY: Final = "eea-metadata.csv.gz"

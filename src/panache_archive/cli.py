@@ -637,7 +637,7 @@ def _parser() -> argparse.ArgumentParser:
         "live-stations", help="build days of daily values at Europe's stations, from the EEA (E2a)"
     )
     living.add_argument(
-        "--pollutant", required=True, choices=[p.value for p in live_stations.POLLUTANTS]
+        "--pollutant", required=True, choices=[p.value for p in live_stations.BUILDABLE]
     )
     living.add_argument("--first-day", help="the first UTC day, ISO (default: yesterday)")
     living.add_argument("--last-day", help="the last UTC day, ISO (default: the first)")
