@@ -4,7 +4,7 @@
 # zips (~480 and ~190 MB, deleted once cut), the Copernicus DEM GLO-90 read from its AWS bucket,
 # and Natural Earth's land and lakes (1:10 million) for the share of each cell on land.
 #
-# Usage: scripts/static-layers.sh WORKDIR [france|europe]
+# Usage: scripts/static-layers.sh WORKDIR [france|europe|domain]
 # Writes WORKDIR/population.tif, built_up.tif, elevation.tif and land.tif, on the region's grid.
 set -euo pipefail
 
@@ -24,6 +24,11 @@ case "$region" in
     west=-11.0 south=35.0 east=32.0 north=71.5
     cols=5160 rows=4380
     tile_lats=$(seq 35 71) tile_lons=$(seq -11 31)
+    ;;
+  domain)
+    west=-25.0 south=30.0 east=45.0 north=72.0
+    cols=8400 rows=5040
+    tile_lats=$(seq 30 71) tile_lons=$(seq -25 44)
     ;;
   *)
     echo "no region $region" >&2
@@ -63,12 +68,17 @@ gdalwarp -q -te "$west" "$south" "$east" "$north" -ts "$cols" "$rows" -r average
 # Land: Natural Earth's polygons burnt on cells ten times finer, lakes burnt back out, averaged.
 ne=https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson
 curl -fsSL --retry 4 -o "$work/lakes.geojson" "$ne/ne_10m_lakes.geojson"
-if [[ $region == europe ]]; then
+if [[ $region == europe || $region == domain ]]; then
   # Only the countries mapped, by ADM0_A3 (ISO_A2 is -99 for France and Norway): those Adrien
   # chose, and the small territories that would be holes among them.
   countries="'FRA','GBR','IRL','ESP','PRT','ITA','CHE','DEU','AUT','CZE','POL','SWE','NOR','FIN'"
   countries+=",'DNK','NLD','BEL','LUX','AND','LIE','MCO','SMR','VAT','IMN','JEY','GGY','GIB'"
   countries+=",'ALD','FRO'"
+  if [[ $region == domain ]]; then
+    # Those with the EEA's stations beyond the 18, judged before any map (Panache's P7).
+    countries+=",'TUR','ROU','GRC','SVK','MKD','BIH','BGR','HUN','SRB','HRV','ISL','EST','LVA'"
+    countries+=",'LTU','SVN','CYP','MLT','ALB','MNE','KOS'"
+  fi
   curl -fsSL --retry 4 -o "$work/land.geojson" "$ne/ne_10m_admin_0_countries.geojson"
   where=(-l ne_10m_admin_0_countries -where "ADM0_A3 IN ($countries)")
 else

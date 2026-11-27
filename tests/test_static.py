@@ -52,6 +52,15 @@ def test_europe_s_grid_shares_the_cams_cells_edges_too() -> None:
     assert static.REGIONS["europe"].grid is grid
 
 
+def test_the_domain_s_grid_holds_cams_s_whole_domain_on_its_cells_edges() -> None:
+    region = static.REGIONS["domain"]
+
+    assert region.grid.shape == (5040, 8400)
+    assert region.grid.box == Box(south=30.0, north=72.0, west=-25.0, east=45.0)
+    assert region.grid.shape[0] % 12 == region.grid.shape[1] % 12 == 0
+    assert region.asset == "static-domain-1km.npz"
+
+
 def test_cells_cover_the_sphere_between_their_edges() -> None:
     grid = Grid(Box(south=0.0, north=1.0, west=0.0, east=1.0), static.CELLS_PER_DEGREE)
 
