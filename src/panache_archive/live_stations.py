@@ -14,7 +14,6 @@ not need. A day's values of every country make one asset per pollutant, of the v
 schema and metadata, each point's country in its own entry.
 """
 
-import gzip
 import json
 import logging
 import threading
@@ -37,7 +36,6 @@ from panache_archive.stations import (
     DATASET_URL,
     DOWNLOAD_API,
     DOWNLOADS,
-    METADATA_URL,
     MIN_HOURS,
     USER_AGENT,
     Point,
@@ -47,6 +45,7 @@ from panache_archive.stations import (
     daily_means,
     list_files,
     read_points,
+    read_station_metadata,
     to_table,
 )
 
@@ -68,28 +67,7 @@ the Canary Islands' dust of February 2020, ozone in the 1970s' photochemical smo
 broken instrument or a wrong unit goes over."""
 STUCK_HOURS: Final = 24
 """Consecutive hours of one same value that make it stuck: a whole day without a change."""
-METADATA_COPY: Final = "eea-metadata.csv.gz"
-"""The last metadata file the EEA served, gzipped, kept beside the days in their release: the
-stations change little, and the EEA's server (discomap) once answered 502 for days on end."""
-
 logger = logging.getLogger(__name__)
-
-
-def read_station_metadata(copy: Path | None, *, read: Read = web.read) -> bytes:
-    """The EEA's station metadata, fresh from its server and written to `copy` when one is given;
-    when the server does not answer, the copy kept from an earlier day, with a warning; else the
-    server's error."""
-    try:
-        content = read(_get(METADATA_URL))
-    except OSError as error:  # urllib's HTTPError and URLError, a timeout
-        if copy is None or not copy.exists():
-            raise
-        logger.warning("the EEA's metadata did not answer (%s): the copy kept is used", error)
-        return gzip.decompress(copy.read_bytes())
-    if copy is not None:
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        copy.write_bytes(gzip.compress(content, mtime=0))
-    return content
 
 
 class Rule(StrEnum):

@@ -339,10 +339,12 @@ def test_merra2_build_and_check_go_through_the_token(
 def test_stations_builds_last_years_means_by_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    asked: list[tuple[str, str, Path, int]] = []
+    asked: list[tuple[str, str, Path, int, Path | None]] = []
 
-    def build(country: str, pollutant: str, out: Path, *, last_year: int) -> Path:
-        asked.append((country, pollutant, out, last_year))
+    def build(
+        country: str, pollutant: str, out: Path, *, last_year: int, metadata_copy: Path | None
+    ) -> Path:
+        asked.append((country, pollutant, out, last_year, metadata_copy))
         return out / "stations.parquet"
 
     monkeypatch.setattr("panache_archive.stations.build", build)
@@ -350,7 +352,7 @@ def test_stations_builds_last_years_means_by_default(
     code = cli.main(["stations", "--pollutant", "nitrogen_dioxide", "--out", str(tmp_path)])
 
     assert code == 0
-    assert asked == [("FR", "nitrogen_dioxide", tmp_path, date.today().year - 1)]
+    assert asked == [("FR", "nitrogen_dioxide", tmp_path, date.today().year - 1, None)]
     assert capsys.readouterr().out.strip() == str(tmp_path / "stations.parquet")
 
 
