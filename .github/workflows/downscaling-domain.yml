@@ -69,12 +69,19 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --locked
+      - name: Fetch the station metadata kept
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # The EEA's server of the metadata answers 502 for days on end (2026-11-27 again): the
+        # copy the live stations keep stands in for it.
+        run: gh release download stations-live-v1 --pattern eea-metadata.csv.gz --dir kept
       - name: Build
         env:
           COUNTRY: ${{ matrix.country }}
           POLLUTANT: ${{ matrix.pollutant }}
         run: >
           uv run panache-archive stations --country "$COUNTRY" --pollutant "$POLLUTANT" --out dist
+          --metadata-copy kept/eea-metadata.csv.gz
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

@@ -183,9 +183,9 @@ def broken_metadata(read: stations.Read) -> stations.Read:
 
 
 def test_the_metadata_the_eea_serves_are_kept_in_a_copy(tmp_path: Path) -> None:
-    copy = tmp_path / "copy" / live_stations.METADATA_COPY
+    copy = tmp_path / "copy" / stations.METADATA_COPY
 
-    content = live_stations.read_station_metadata(copy, read=fake_service({}, []))
+    content = stations.read_station_metadata(copy, read=fake_service({}, []))
 
     assert content == fake_service({}, [])(stations.METADATA_URL)
     assert gzip.decompress(copy.read_bytes()) == content
@@ -194,11 +194,11 @@ def test_the_metadata_the_eea_serves_are_kept_in_a_copy(tmp_path: Path) -> None:
 def test_the_copy_serves_when_the_eea_does_not_answer(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    copy = tmp_path / live_stations.METADATA_COPY
+    copy = tmp_path / stations.METADATA_COPY
     kept = metadata(point_row("LU", "SPO-LU1", "LU0001A", "6001"))
     copy.write_bytes(gzip.compress(kept))
 
-    content = live_stations.read_station_metadata(copy, read=broken_metadata(fake_service({}, [])))
+    content = stations.read_station_metadata(copy, read=broken_metadata(fake_service({}, [])))
 
     assert content == kept
     assert "did not answer" in caplog.text
@@ -206,7 +206,7 @@ def test_the_copy_serves_when_the_eea_does_not_answer(
 
 def test_without_a_copy_the_eea_s_error_stands(tmp_path: Path) -> None:
     with pytest.raises(urllib.error.HTTPError):
-        live_stations.read_station_metadata(
+        stations.read_station_metadata(
             tmp_path / "none.csv.gz", read=broken_metadata(fake_service({}, []))
         )
 
@@ -218,8 +218,8 @@ def test_a_day_is_built_from_the_copy_when_the_eea_does_not_answer(tmp_path: Pat
         )
     }
     service = fake_service(files, [])
-    copy = tmp_path / live_stations.METADATA_COPY
-    live_stations.read_station_metadata(copy, read=service)
+    copy = tmp_path / stations.METADATA_COPY
+    stations.read_station_metadata(copy, read=service)
 
     paths = live_stations.build(
         Pollutant.PM2_5,
@@ -232,3 +232,20 @@ def test_a_day_is_built_from_the_copy_when_the_eea_does_not_answer(tmp_path: Pat
     )
 
     assert [p.name for p in paths] == ["stations-live-pm2_5-2026-11-10.parquet"]
+
+
+def test_the_validated_builder_reads_the_metadata_kept_when_the_eea_fails(tmp_path: Path) -> None:
+    copy = tmp_path / stations.METADATA_COPY
+    copy.write_bytes(gzip.compress(b"Countrycode\tAirPollutantCode\n"))
+
+    def read(request: urllib.request.Request | str) -> bytes:
+        url = request if isinstance(request, str) else request.full_url
+        if url == stations.METADATA_URL:
+            raise urllib.error.URLError("502")
+        return b"ParquetFileUrl\r\n"
+
+    path = stations.build(
+        "AD", stations.Pollutant.PM2_5, tmp_path, last_year=2025, read=read, metadata_copy=copy
+    )
+
+    assert path.name == "stations-ad-pm2_5.parquet"
