@@ -208,3 +208,21 @@ def test_an_axis_of_one_cell_takes_the_other_s_step(tmp_path: Path) -> None:
     cells.write(path, LATS[:1], LONS, FIRST_DAY, [np.zeros((1, 1, LONS.size))], metadata={})
 
     assert cells.read_header(path).step == 0.1
+
+
+def test_frames_written_one_by_one_must_fit_the_grid(tmp_path: Path) -> None:
+    header = cells.Header(
+        statistics=1,
+        cells_per_frame=8,
+        first_lat=30.05,
+        first_lon=-24.95,
+        step=0.1,
+        rows=1,
+        columns=11,
+        first_day=FIRST_DAY,
+        days=5,
+    )
+    blocks = [np.zeros((1, 8, 5), dtype=np.int32), np.zeros((1, 8, 5), dtype=np.int32)]
+
+    with pytest.raises(ValueError, match=r"a block of \(1, 8, 5\) for the frame of \(0, 8\)"):
+        cells.write_frames(tmp_path / "a.cells", header, blocks, metadata={})

@@ -36,6 +36,7 @@ from panache_archive import (
     move,
     plan,
     private,
+    records,
     space,
     static,
     stations,
@@ -125,6 +126,36 @@ def _supervise(args: argparse.Namespace) -> int:
         domain=Domain(args.domain),
     )
     print(decision)
+    return 0
+
+
+def _records_plan(args: argparse.Namespace) -> int:
+    assets = Path(args.assets).read_text(encoding="utf-8").split()
+    built = Path(args.built).read_text(encoding="utf-8").split() if args.built else []
+    variables = {v.strip() for v in args.variables.split(",") if v.strip()} - {"all"}
+    wanted = [r for r in records.planned(assets, built) if not variables or r.variable in variables]
+    print(records.matrix(wanted))
+    return 0
+
+
+def _records_build(args: argparse.Namespace) -> int:
+    record = records.Record(args.variable, args.first, args.last)
+    path = records.build(record, Path(args.folder), Path(args.out) / record.name)
+    print(f"{path.name}: {path.stat().st_size / 1e6:.1f} MB")
+    return 0
+
+
+def _records_check(args: argparse.Namespace) -> int:
+    lines = []
+    for asset in args.assets:
+        path = Path(asset)
+        compared = records.check(path, Path(args.folder))
+        lines.append(f"- {path.name}: {compared} cells equal to their yearly assets, every day")
+    report = "\n".join(lines)
+    print(report)
+    if args.summary:
+        with Path(args.summary).open("a", encoding="utf-8") as summary:
+            summary.write(report + "\n")
     return 0
 
 
@@ -514,6 +545,32 @@ def _parser() -> argparse.ArgumentParser:
     supervising.add_argument("--url", default="", help="this supervisor run's page")
     supervising.add_argument("--domain", default=Domain.FRANCE.value, choices=domains)
     supervising.set_defaults(run=_supervise)
+
+    records_planning = commands.add_parser(
+        "records-plan", help="print the matrix of the records still missing (D134)"
+    )
+    records_planning.add_argument("--assets", required=True, help="cams-europe-v1's assets")
+    records_planning.add_argument("--built", help="a file listing the records already built")
+    records_planning.add_argument("--variables", default="all", help="`all`, or pm10,ozone...")
+    records_planning.set_defaults(run=_records_plan)
+
+    records_building = commands.add_parser(
+        "records-build", help="stack a pollutant's validated years of one grid, a cell a frame"
+    )
+    records_building.add_argument("--variable", required=True)
+    records_building.add_argument("--first", required=True, type=int)
+    records_building.add_argument("--last", required=True, type=int)
+    records_building.add_argument("--folder", required=True, help="where its yearly assets are")
+    records_building.add_argument("--out", default="dist", help="where the record is written")
+    records_building.set_defaults(run=_records_build)
+
+    records_checking = commands.add_parser(
+        "records-check", help="compare records with the yearly assets they are stacked from"
+    )
+    records_checking.add_argument("assets", nargs="+")
+    records_checking.add_argument("--folder", required=True, help="where the yearly assets are")
+    records_checking.add_argument("--summary", help="a Markdown file to append the report to")
+    records_checking.set_defaults(run=_records_check)
 
     era5_planning = commands.add_parser("era5-plan", help="print the ERA5 years still missing")
     era5_planning.add_argument("--years", default="all", help="`all`, a year, or a span")

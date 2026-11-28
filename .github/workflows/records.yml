@@ -1,0 +1,113 @@
+name: Records
+
+# Stacks each pollutant's validated years of one CAMS grid into one `.cells` asset of one cell a
+# frame (Panache's D134), in the release cams-europe-records-v1: a click on a place then reads a
+# pollutant's years in two small requests a grid, where cams-europe-v1 takes two a year. Built from
+# cams-europe-v1 alone; each record is checked, cell by cell and day by day, against the yearly
+# assets it is stacked from before it is published. A run builds only what the release lacks:
+# run it again when the archive gains a validated year. The Mirror workflow copies the release to
+# Hugging Face, as every other.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variables:
+        description: "`all`, or Open-Meteo names separated by commas, such as pm10,ozone"
+        default: all
+
+concurrency:
+  group: records
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE: cams-europe-records-v1
+  SOURCES: cams-europe-v1
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release view "$RELEASE" > /dev/null 2>&1
+          || gh release create "$RELEASE" --title "CAMS Europe daily means, each cell's record"
+          --notes-file docs/cams-europe-records-release.md
+      - name: List the yearly assets and the records already built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$SOURCES" --json assets --jq '.assets[].name' > assets.txt
+          gh release view "$RELEASE" --json assets --jq '.assets[].name' > built.txt
+      - name: Plan
+        id: plan
+        env:
+          VARIABLES: ${{ inputs.variables }}
+        run: |
+          matrix=$(uv run panache-archive records-plan --assets assets.txt --built built.txt \
+            --variables "$VARIABLES")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix" | jq -r '"\(length) records to build: \(map(.record) | join(", "))"' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.record }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Download its years
+        env:
+          GH_TOKEN: ${{ github.token }}
+          YEARS: ${{ matrix.sources }}
+        run: |
+          for asset in $YEARS; do
+            gh release download "$SOURCES" --pattern "$asset" --dir years
+          done
+          du -sh years >> "$GITHUB_STEP_SUMMARY"
+      - name: Build
+        env:
+          VARIABLE: ${{ matrix.variable }}
+          FIRST: ${{ matrix.first }}
+          LAST: ${{ matrix.last }}
+        run: >
+          uv run panache-archive records-build --variable "$VARIABLE" --first "$FIRST"
+          --last "$LAST" --folder years --out dist
+      - name: Check against its years
+        run: >
+          uv run panache-archive records-check dist/*.cells --folder years
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE" dist/*.cells --clobber
