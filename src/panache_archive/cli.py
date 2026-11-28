@@ -28,6 +28,7 @@ from panache_archive import (
     emissions,
     era5,
     fine,
+    fine_present,
     live_compare,
     live_stations,
     merra2,
@@ -213,6 +214,33 @@ def _private_store() -> private.PrivateStore:
     if not token:
         raise SystemExit("HF_TOKEN is not set: Hugging Face would refuse the private dataset")
     return private.PrivateStore(token)
+
+
+def _present_plan(args: argparse.Namespace) -> int:
+    names = Path(args.files).read_text(encoding="utf-8").splitlines()
+    spans = fine_present.missing(names, date.fromisoformat(args.today))
+    planned = [
+        {"pollutant": s.pollutant, "first": s.first.isoformat(), "last": s.last.isoformat()}
+        for s in spans
+    ]
+    print(json.dumps(planned))
+    return 0
+
+
+def _present_joins(args: argparse.Namespace) -> int:
+    names = Path(args.files).read_text(encoding="utf-8").splitlines()
+    found = fine_present.joins(names, date.fromisoformat(args.today))
+    planned = [
+        {
+            "pollutant": j.whole.pollutant,
+            "year": j.whole.first.year,
+            "name": j.whole.name,
+            "parts": [p.name for p in j.parts],
+        }
+        for j in found
+    ]
+    print(json.dumps(planned))
+    return 0
 
 
 def _private_list(args: argparse.Namespace) -> int:
@@ -581,6 +609,14 @@ def _parser() -> argparse.ArgumentParser:
     privately = commands.add_parser(
         "private", help="the private Hugging Face dataset of models and experiment results"
     ).add_subparsers(dest="action", required=True)
+    for name, run, said in (
+        ("present-plan", _present_plan, "the days the present's 1 km maps lack, as JSON"),
+        ("present-joins", _present_joins, "the months of those maps to join, as JSON"),
+    ):
+        planning = commands.add_parser(name, help=said)
+        planning.add_argument("--files", required=True, help="the folder's names, one a line")
+        planning.add_argument("--today", required=True, help="the day it is, ISO")
+        planning.set_defaults(run=run)
     private_list = privately.add_parser("list", help="the files of a folder, one a line")
     private_list.add_argument("--folder", required=True, help="a release's name")
     private_list.set_defaults(run=_private_list)
