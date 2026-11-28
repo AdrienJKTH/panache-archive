@@ -253,6 +253,8 @@ Then the [`Catch-up of the present's 1 km`](.github/workflows/present-catch-up.y
 gh workflow run present-catch-up.yml
 ```
 
+From then on the [`Daily 1 km of the present`](.github/workflows/present-daily.yml) workflow maps the days up to yesterday twice a day, a new file each pass, and joins a month's files into one once it is over.
+
 ## The compute Space
 
 Panache's button "compute in high definition" calls a free Hugging Face Space, [`adrien4916/panache-compute`](https://huggingface.co/spaces/adrien4916/panache-compute), which computes a view at ~100 m on request (Panache's D74). A public Space's image can be pulled by anyone, and Panache's repository is private, so the [`Compute Space`](.github/workflows/space.yml) workflow (`panache-archive space`) deploys only what `panache.compute_app` and `panache.fetch_archive` import, worked out from their imports, with the Dockerfile and card of [`space/`](space/). The Space builds itself and its data from this repository's public releases.

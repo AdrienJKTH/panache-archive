@@ -1,0 +1,158 @@
+name: Daily 1 km of the present
+
+# Panache's P7, step 4: keeps the 1 km maps of NO2 and ozone current (the private dataset's
+# downscaled-live-v1). Each pass maps the days after the last file up to yesterday, from CAMS's
+# daily stream and IFS (`panache-downscaling-present-maps map`, the models the pilot trained), a
+# new file never a rewritten one, since the quota counts every revision. Once a month is over, its
+# files are joined into one and the parts deleted. What to do is read from the file names
+# (`panache-archive present-plan | present-joins`). Nothing Panache computes is in a release, an
+# artifact or the log (D114).
+#
+# Twice a day, after CAMS's run is in the bucket (about 11:35 UTC): a pass with nothing missing
+# takes a minute.
+
+on:
+  schedule:
+    - cron: "40 12 * * *"
+    - cron: "40 17 * * *"
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+
+concurrency:
+  group: present-daily
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FOLDER: downscaled-live-v1  # a folder of the private dataset
+
+jobs:
+  plan:
+    name: Plan the days
+    runs-on: ubuntu-24.04
+    outputs:
+      spans: ${{ steps.plan.outputs.spans }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --locked
+      - id: plan
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run panache-archive private list --folder "$FOLDER" > files.txt
+          spans=$(uv run panache-archive present-plan --files files.txt --today "$(date -u +%F)")
+          echo "spans=$spans" >> "$GITHUB_OUTPUT"
+          echo "$(jq length <<< "$spans") spans of days to map" >> "$GITHUB_STEP_SUMMARY"
+
+  map:
+    name: ${{ matrix.pollutant }} from ${{ matrix.first }}
+    needs: plan
+    if: needs.plan.outputs.spans != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.spans) }}
+    env:
+      POLLUTANT: ${{ matrix.pollutant }}
+      FIRST: ${{ matrix.first }}
+      LAST: ${{ matrix.last }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache || 'main' }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Fetch the fixed layers and the live model
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs \
+            --pattern static-europe-1km.npz
+          uv run panache-archive private download --folder "$FOLDER" \
+            --pattern "downscaling-present-$POLLUTANT.lgb.txt" --dir models
+      - name: Map the days
+        run: |
+          /tmp/panache/bin/panache-downscaling-present-maps map --europe inputs \
+            --pollutant "$POLLUTANT" --models models --first "$FIRST" --last "$LAST" --out maps \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Keep them, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$FOLDER" maps/*
+
+  join:
+    name: Join the months over
+    needs: [plan, map]
+    # After the maps, even when there were none to make or one failed: a month joins once whole.
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --locked
+      - name: Which months
+        id: plan
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv run panache-archive private list --folder "$FOLDER" > files.txt
+          uv run panache-archive present-joins --files files.txt --today "$(date -u +%F)" > joins.json
+          echo "months=$(jq length joins.json)" >> "$GITHUB_OUTPUT"
+          echo "$(jq length joins.json) months to join" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check out Panache
+        if: steps.plan.outputs.months != '0'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache || 'main' }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Join, publish, then delete the parts
+        if: steps.plan.outputs.months != '0'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+          for i in $(seq 0 $(($(jq length joins.json) - 1))); do
+            pollutant=$(jq -r ".[$i].pollutant" joins.json)
+            year=$(jq -r ".[$i].year" joins.json)
+            name=$(jq -r ".[$i].name" joins.json)
+            mapfile -t parts < <(jq -r ".[$i].parts[]" joins.json)
+            rm -rf parts joined && mkdir -p parts joined
+            for part in "${parts[@]}"; do
+              uv run panache-archive private download --folder "$FOLDER" --pattern "$part" --dir parts
+            done
+            /tmp/panache/bin/panache-downscaling-maps join --pollutant "$pollutant" --year "$year" \
+              --parts "${parts[@]/#/parts/}" --out joined
+            mv joined/*.days "joined/$name"
+            uv run panache-archive private upload --folder "$FOLDER" "joined/$name"
+            # Only once the month is up, and only these names: without any, the whole folder goes.
+            if [[ ${#parts[@]} -gt 0 ]]; then
+              uv run panache-archive private delete --folder "$FOLDER" "${parts[@]}"
+            fi
+          done
