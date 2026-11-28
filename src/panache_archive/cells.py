@@ -22,7 +22,7 @@ Hundredths are the 0.01 rounding of France's Parquet assets, so both hold the sa
 
 import json
 import struct
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -185,18 +185,41 @@ def write(
         days=days,
         lon_step=lon_step if lon_step != lat_step else None,
     )
+    blocks = (
+        by_cell[row, first : first + header.cells_per_frame].transpose(1, 0, 2)
+        for row in range(header.rows)
+        for first in range(0, header.columns, header.cells_per_frame)
+    )
+    write_frames(path, header, blocks, metadata=metadata)
+
+
+def write_frames(
+    path: Path,
+    header: Header,
+    blocks: Iterable[IntArray],
+    *,
+    metadata: Mapping[str, Any],
+) -> None:
+    """Write a file of `header`'s grid from its frames' hundredths, `(statistic, cell, day)`, one
+    a frame in the order of the offset table (row by row, west to east): a file too large to hold
+    whole is written as it is computed."""
     codec = pa.Codec("zstd", compression_level=ZSTD_LEVEL)
     offsets = [header.data_start]
+    frames = (
+        (row, first)
+        for row in range(header.rows)
+        for first in range(0, header.columns, header.cells_per_frame)
+    )
     with path.open("wb") as out:
         out.seek(header.data_start)
-        for row in range(header.rows):
-            for first in range(0, header.columns, header.cells_per_frame):
-                block = by_cell[row, first : first + header.cells_per_frame]
-                cells = block.shape[0]
-                values = np.ascontiguousarray(block.transpose(1, 0, 2), dtype="<i4")
-                payload = codec.compress(_split(values), asbytes=True)
-                out.write(FRAME_HEADER.pack(row, first, cells, days) + payload)
-                offsets.append(offsets[-1] + FRAME_HEADER.size + len(payload))
+        for (row, first), block in zip(frames, blocks, strict=True):
+            cells = min(header.cells_per_frame, header.columns - first)
+            if block.shape != (header.statistics, cells, header.days):
+                raise ValueError(f"a block of {block.shape} for the frame of ({row}, {first})")
+            values = np.ascontiguousarray(block, dtype="<i4")
+            payload = codec.compress(_split(values), asbytes=True)
+            out.write(FRAME_HEADER.pack(row, first, cells, header.days) + payload)
+            offsets.append(offsets[-1] + FRAME_HEADER.size + len(payload))
         text = json.dumps(metadata).encode()
         out.write(text)
         out.seek(0)
@@ -270,14 +293,22 @@ def read_region(path: Path, rows: range, columns: range) -> IntArray:
     if not rows or not columns or rows.step != 1 or columns.step != 1:
         raise ValueError(f"rows {rows} and columns {columns} are not a block")
     header.frame_of(rows[-1], columns[-1])  # inside the grid
-    data = path.read_bytes()
+    # The rows' frames follow one another: their offsets, then their bytes, in one read each.
+    first_frame, last_frame = rows.start * header.blocks, rows.stop * header.blocks
+    with path.open("rb") as source:
+        source.seek(header.entry_range(first_frame)[0])
+        offsets = np.frombuffer(
+            source.read(OFFSET.size * (last_frame - first_frame + 1)), dtype="<u8"
+        )
+        source.seek(int(offsets[0]))
+        data = source.read(int(offsets[-1] - offsets[0]))
+    base = int(offsets[0])
     per_frame = header.cells_per_frame
     out = np.empty((header.statistics, header.days, len(rows), len(columns)), dtype=np.int32)
     for row in rows:
         for block in range(columns.start // per_frame, (columns.stop - 1) // per_frame + 1):
-            start, end = struct.unpack_from(
-                "<QQ", data, header.entry_range(row * header.blocks + block)[0]
-            )
+            at = (row - rows.start) * header.blocks + block
+            start, end = int(offsets[at]) - base, int(offsets[at + 1]) - base
             frame_row, first, values = decode_frame(header, data[start:end])
             if (frame_row, first) != (row, block * per_frame):
                 raise ValueError(
