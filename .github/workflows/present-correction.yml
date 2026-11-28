@@ -1,0 +1,83 @@
+name: Correction of the present's 1 km
+
+# Panache's P7: would the day's stations correct the 1 km maps of ozone as they correct the
+# ~11 km ones (Panache's D97)? `panache-downscaling-present-correction` runs D97's held-out check
+# on the same station-days twice: CAMS's stream, and the 1 km model of the present in its place,
+# each before and after the correction. It reads the stations' ledger (the private dataset's
+# innovations-live-v1), the downscaling's inputs, and CAMS's stream and IFS from Open-Meteo's
+# public bucket on AWS.
+#
+# The tables and scores are what Panache learns (D114): they go to the private dataset's folder
+# present-corrections/<run>, never to a release, an artifact, the log or the summary.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panache:
+        description: "The commit, branch or tag of AdrienJKTH/panache to run"
+        default: main
+      first:
+        description: "The first day judged, ISO"
+        default: "2026-02-01"
+      last:
+        description: "The last day judged, ISO"
+        default: "2026-10-31"
+
+permissions:
+  contents: read
+
+env:
+  FOLDER: present-corrections/${{ github.run_id }}  # a folder of the private dataset
+
+jobs:
+  check:
+    name: Check the correction, ozone
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check out Panache
+        # Panache's repository is private: a read-only deploy key on it, whose private half is
+        # this repository's secret PANACHE_DEPLOY_KEY.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AdrienJKTH/panache
+          ref: ${{ inputs.panache }}
+          ssh-key: ${{ secrets.PANACHE_DEPLOY_KEY }}
+          path: panache
+          persist-credentials: false
+      - name: Install Panache's backend
+        run: |
+          uv venv /tmp/panache --python 3.12
+          uv pip install --python /tmp/panache/bin/python ./panache/backend
+      - name: Install the archive's tools
+        run: uv sync --locked
+      - name: Fetch the stations, the fixed layers and the ledger
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          gh release download downscaling-europe-v1 --repo "$GITHUB_REPOSITORY" --dir inputs \
+            --pattern "stations-*-ozone.parquet" --pattern "static-europe-1km.npz"
+          uv run panache-archive private download --folder innovations-live-v1 \
+            --pattern innovations-ozone.parquet --dir ledgers
+      - name: Check
+        env:
+          FIRST: ${{ inputs.first }}
+          LAST: ${{ inputs.last }}
+        run: |
+          mkdir -p out
+          [ -x /usr/bin/time ] || sudo apt-get install -y -q time > /dev/null
+          # The tables are printed to a file: the log of a public repository is public.
+          /usr/bin/time -v -o time.txt /tmp/panache/bin/panache-downscaling-present-correction \
+            --europe inputs --ledgers ledgers --first "$FIRST" --last "$LAST" \
+            --out out/correction-ozone.json > out/correction-ozone.md
+          {
+            echo "Checked; the scores are in the private dataset's $FOLDER."
+            grep -E "Elapsed|Maximum resident" time.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the scores, privately
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run panache-archive private upload --folder "$FOLDER" out/*
