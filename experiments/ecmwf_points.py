@@ -7,15 +7,22 @@
 #     "pyarrow>=20.0",
 # ]
 # ///
-"""Panache's P6, E1: AIFS Single's 00 UTC runs at a few places, from ECMWF's open data on AWS.
+"""ECMWF's 00 UTC runs at a few places, from ECMWF's open data on AWS (Panache's P6 and D130).
 
-For each run of a month, each step (6-hourly to J+8) and each of eight surface fields, the GRIB
+For each run of a period, each step the model reads and each of eight surface fields, the GRIB
 message is fetched by its range (the step's `.index` says where it is), decoded, and the value at
 the nearest 0.25° point of each place kept, in the units GRIB declares. Panache turns them into
-daily weather (`panache.forecast.aifs`). A run missing a file or a field is left out whole.
+daily weather (`panache.forecast.ecmwf_points`).
+
+- `aifs`: AIFS Single, 6-hourly to J+8 (E1).
+- `ifs`: IFS's `oper` runs, 3-hourly to 144 h then 6-hourly to 192 h, as Panache's live forecast
+  reads them (D130). Total cloud cover is in them only from late 2025: a run without it at every
+  step is kept without it.
+
+A run missing a file or another field is left out whole.
 
 The data: "ECMWF open data", CC BY 4.0, modified (values at points).
-Run as `uv run --script experiments/aifs_points.py --help`: ecCodes stays out of the project.
+Run as `uv run --script experiments/ecmwf_points.py --help`: ecCodes stays out of the project.
 """
 
 import argparse
@@ -24,6 +31,7 @@ import logging
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -34,13 +42,27 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 MIRROR = "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"
-STEPS = range(0, 193, 6)
 PARAMS = ("2t", "2d", "10u", "10v", "msl", "tp", "ssrd", "tcc")
 ATTEMPTS = 8
 CONCURRENCY = 8
 """The mirror answers 503 when asked too fast: few requests at once, and patient retries."""
 
-logger = logging.getLogger("aifs_points")
+logger = logging.getLogger("ecmwf_points")
+
+
+@dataclass(frozen=True)
+class Model:
+    folder: str
+    """Under the run's day and hour, on the mirror."""
+    steps: tuple[int, ...]
+    optional: tuple[str, ...] = ()
+    """Fields a run may lack, at every step."""
+
+
+MODELS = {
+    "aifs": Model("aifs-single/0p25/oper", tuple(range(0, 193, 6))),
+    "ifs": Model("ifs/0p25/oper", (*range(0, 145, 3), *range(150, 193, 6)), ("tcc",)),
+}
 
 
 class MissingError(Exception):
@@ -116,26 +138,33 @@ class Grid:
             eccodes.codes_release(message)
 
 
-def fetch_step(http: httpx.Client, day: date, step: int) -> dict[str, bytes]:
-    stem = f"{MIRROR}/{day:%Y%m%d}/00z/aifs-single/0p25/oper/{day:%Y%m%d}000000-{step}h-oper-fc"
+def fetch_step(http: httpx.Client, model: Model, day: date, step: int) -> dict[str, bytes]:
+    stem = f"{MIRROR}/{day:%Y%m%d}/00z/{model.folder}/{day:%Y%m%d}000000-{step}h-oper-fc"
     entries = [json.loads(line) for line in get(http, f"{stem}.index").splitlines() if line]
     where = {
         e["param"]: (int(e["_offset"]), int(e["_length"]))
         for e in entries
         if e["levtype"] == "sfc" and e["param"] in PARAMS
     }
-    missing = [p for p in PARAMS if p not in where]
+    missing = [p for p in PARAMS if p not in where and p not in model.optional]
     if missing:
         raise MissingError(f"{stem} lacks {missing}")
-    return {p: get(http, f"{stem}.grib2", where[p]) for p in PARAMS}
+    return {p: get(http, f"{stem}.grib2", where[p]) for p in PARAMS if p in where}
 
 
-def run_rows(pool: ThreadPoolExecutor, http: httpx.Client, grid: Grid, day: date) -> list[dict]:
+def run_rows(
+    pool: ThreadPoolExecutor, http: httpx.Client, grid: Grid, model: Model, day: date
+) -> list[dict]:
     rows = []
+    found = dict.fromkeys(model.optional, 0)
     # Decoded here, one at a time: ecCodes is not told to be shared between threads.
     for step, messages in zip(
-        STEPS, pool.map(lambda s: fetch_step(http, day, s), STEPS), strict=True
+        model.steps,
+        pool.map(lambda s: fetch_step(http, model, day, s), model.steps),
+        strict=True,
     ):
+        for param in found:
+            found[param] += param in messages
         for param, raw in messages.items():
             units, values = grid.values(raw)
             rows += [
@@ -149,18 +178,23 @@ def run_rows(pool: ThreadPoolExecutor, http: httpx.Client, grid: Grid, day: date
                 }
                 for place, value in zip(grid.places, values, strict=True)
             ]
-    return rows
+    partial = {p for p, steps in found.items() if steps < len(model.steps)}
+    if any(found[p] for p in partial):
+        logger.warning("run of %s: %s at some steps only, left out", day, sorted(partial))
+    return [row for row in rows if row["param"] not in partial]
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", choices=MODELS, required=True)
     parser.add_argument("--first", type=date.fromisoformat, required=True, help="first run's day")
     parser.add_argument("--last", type=date.fromisoformat, required=True, help="last run's day")
     parser.add_argument("--places", type=Path, required=True, help="JSON: name, lat, lon")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    model = MODELS[args.model]
     grid = Grid(json.loads(args.places.read_text(encoding="utf-8")))
     days = [args.first + timedelta(i) for i in range((args.last - args.first).days + 1)]
     rows: list[dict] = []
@@ -168,7 +202,7 @@ def main() -> None:
     with httpx.Client(timeout=120) as http, ThreadPoolExecutor(CONCURRENCY) as pool:
         for day in days:
             try:
-                rows += run_rows(pool, http, grid, day)
+                rows += run_rows(pool, http, grid, model, day)
             except MissingError as error:
                 logger.warning("run of %s left out: %s", day, error)
                 left_out.append(day)

@@ -2,7 +2,7 @@ name: AIFS experiment
 
 # Panache's P6, E1: does AIFS forecast PM2.5 better than IFS? A job per month reads AIFS Single's
 # 00 UTC runs of 22 February to 30 December 2025 at the experiment's 21 cities from ECMWF's open
-# data on AWS (~105 MB a run, ~31 GB in all; `experiments/aifs_points.py`), then Panache's
+# data on AWS (~105 MB a run, ~31 GB in all; `experiments/ecmwf_points.py`), then Panache's
 # `panache-aifs-experiment` feeds them to D98's LightGBM and scores them against IFS's.
 #
 # What is read and what comes out is Panache's: into the private dataset's `aifs-experiment-v1`
@@ -70,7 +70,7 @@ jobs:
           LAST: ${{ matrix.last }}
         run: |
           set -o pipefail
-          uv run --script experiments/aifs_points.py --first "$FIRST" --last "$LAST" \
+          uv run --script experiments/ecmwf_points.py --model aifs --first "$FIRST" --last "$LAST" \
             --places places.json --out "out/aifs-$FIRST.parquet" 2>&1 | tee points.log
           grep -E "runs read" points.log >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the points, privately
