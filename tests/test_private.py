@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -59,6 +60,12 @@ class FakeApi:
     def super_squash_history(self, repo_id: str, *, repo_type: str) -> None:
         assert (repo_id, repo_type) == (private.REPO_ID, "dataset")
         self.squashed += 1
+
+    taken: int | None = 82_786_001_590
+
+    def dataset_info(self, repo_id: str, *, expand: list[str]) -> SimpleNamespace:
+        assert (repo_id, expand) == (private.REPO_ID, ["usedStorage"])
+        return SimpleNamespace(used_storage=self.taken)
 
     def hf_hub_download(
         self,
@@ -387,3 +394,13 @@ def test_the_delete_and_squash_commands(
     out = capsys.readouterr().out
     assert "x.txt out of a-v1" in out
     assert "the whole folder out of scratch/7" in out
+
+
+def test_what_the_dataset_takes_is_hugging_face_s_count() -> None:
+    api = FakeApi()
+    store = private.PrivateStore("token", api=api)
+
+    assert store.used() == 82_786_001_590
+    api.taken = None
+    with pytest.raises(ValueError, match="does not say"):
+        store.used()

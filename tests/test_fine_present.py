@@ -86,3 +86,32 @@ def test_the_cli_says_what_to_map_and_what_to_join(
         f"downscaled-{NO2}-present-2026-11-01-to-2026-11-27.days",
         f"downscaled-{NO2}-present-2026-11-28-to-2026-11-30.days",
     ]
+
+
+def test_a_forecast_is_made_once_a_run_and_older_runs_are_dropped() -> None:
+    names = [
+        *CATCH_UP,
+        "downscaled-ozone-forecast-2026-11-26-to-2026-11-29.days",
+        "downscaled-ozone-forecast-2026-11-27-to-2026-11-30.days",
+        "downscaled-ozone-forecast-2026-11-28-to-2026-12-01.days",
+    ]
+
+    assert fine_present.without_forecast(names, date(2026, 11, 28)) == [NO2]
+    assert fine_present.stale_forecasts(names, date(2026, 11, 28)) == [
+        "downscaled-ozone-forecast-2026-11-26-to-2026-11-29.days"
+    ]
+    # A forecast is not a day mapped from the stream: yesterday is still missing.
+    assert [s.first for s in fine_present.missing(names, date(2026, 11, 29))][-1] == date(
+        2026, 11, 28
+    )
+
+
+def test_the_cli_says_which_forecasts_to_make_and_drop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = tmp_path / "files.txt"
+    old = "downscaled-ozone-forecast-2026-11-20-to-2026-11-23.days"
+    files.write_text("\n".join([*CATCH_UP, old]), encoding="utf-8")
+
+    assert cli.main(["present-forecasts", "--files", str(files), "--today", "2026-11-28"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"build": [NO2, "ozone"], "stale": [old]}

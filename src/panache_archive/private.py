@@ -88,6 +88,8 @@ class Api(Protocol):
 
     def super_squash_history(self, repo_id: str, *, repo_type: str) -> Any: ...
 
+    def dataset_info(self, repo_id: str, *, expand: Any) -> Any: ...
+
     def hf_hub_download(
         self, repo_id: str, filename: str, *, repo_type: str, local_dir: str
     ) -> str: ...
@@ -152,6 +154,14 @@ class PrivateStore:
             return {e.path.rsplit("/", 1)[-1]: e.size for e in entries if isinstance(e, RepoFile)}
         except (EntryNotFoundError, RepositoryNotFoundError):
             return {}
+
+    def used(self) -> int:
+        """The bytes the dataset takes of the private quota, old revisions included, as
+        Hugging Face counts them; an error if it does not say."""
+        info = self._api.dataset_info(self._repo_id, expand=["usedStorage"])
+        if info.used_storage is None:
+            raise ValueError(f"Hugging Face does not say what {self._repo_id} takes")
+        return int(info.used_storage)
 
     def names(self, folder: str) -> list[str]:
         """The files of `folder`, by name."""
