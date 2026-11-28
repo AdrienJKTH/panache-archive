@@ -243,6 +243,22 @@ def _present_joins(args: argparse.Namespace) -> int:
     return 0
 
 
+def _present_forecasts(args: argparse.Namespace) -> int:
+    names = Path(args.files).read_text(encoding="utf-8").splitlines()
+    today = date.fromisoformat(args.today)
+    planned = {
+        "build": fine_present.without_forecast(names, today),
+        "stale": fine_present.stale_forecasts(names, today),
+    }
+    print(json.dumps(planned))
+    return 0
+
+
+def _private_used(_args: argparse.Namespace) -> int:
+    print(_private_store().used())
+    return 0
+
+
 def _private_list(args: argparse.Namespace) -> int:
     for name in _private_store().names(args.folder):
         print(name)
@@ -612,11 +628,15 @@ def _parser() -> argparse.ArgumentParser:
     for name, run, said in (
         ("present-plan", _present_plan, "the days the present's 1 km maps lack, as JSON"),
         ("present-joins", _present_joins, "the months of those maps to join, as JSON"),
+        ("present-forecasts", _present_forecasts, "the forecasts to make and to drop, as JSON"),
     ):
         planning = commands.add_parser(name, help=said)
         planning.add_argument("--files", required=True, help="the folder's names, one a line")
         planning.add_argument("--today", required=True, help="the day it is, ISO")
         planning.set_defaults(run=run)
+    privately.add_parser(
+        "used", help="the bytes the private dataset takes of the quota, history included"
+    ).set_defaults(run=_private_used)
     private_list = privately.add_parser("list", help="the files of a folder, one a line")
     private_list.add_argument("--folder", required=True, help="a release's name")
     private_list.set_defaults(run=_private_list)

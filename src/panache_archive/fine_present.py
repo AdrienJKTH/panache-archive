@@ -18,6 +18,12 @@ ASSET: Final = re.compile(
     r"downscaled-(?P<pollutant>\w+)-present-(?P<first>\d{4}-\d\d-\d\d)"
     r"-to-(?P<last>\d{4}-\d\d-\d\d)\.days"
 )
+FORECAST: Final = re.compile(
+    r"downscaled-(?P<pollutant>\w+)-forecast-(?P<first>\d{4}-\d\d-\d\d)"
+    r"-to-\d{4}-\d\d-\d\d\.days"
+)
+KEPT_FORECAST: Final = timedelta(days=1)
+"""How old a run's forecast stays: yesterday's, for a reader whose list is an hour old."""
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -88,3 +94,24 @@ def joins(names: Sequence[str], today: date) -> list[Join]:
         if follow and parts[0].first == first and parts[-1].last == last:
             found.append(Join(Span(pollutant, first, last), tuple(parts)))
     return found
+
+
+def without_forecast(names: Sequence[str], today: date) -> list[str]:
+    """The pollutants mapped that have no forecast from today's run."""
+    held = {
+        match["pollutant"]
+        for name in names
+        if (match := FORECAST.fullmatch(name.strip()))
+        and date.fromisoformat(match["first"]) >= today
+    }
+    return sorted({f.pollutant for f in present_files(names)} - held)
+
+
+def stale_forecasts(names: Sequence[str], today: date) -> list[str]:
+    """The forecasts of runs older than `KEPT_FORECAST`."""
+    return sorted(
+        match[0]
+        for name in names
+        if (match := FORECAST.fullmatch(name.strip()))
+        and date.fromisoformat(match["first"]) < today - KEPT_FORECAST
+    )

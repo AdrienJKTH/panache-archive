@@ -253,7 +253,7 @@ Then the [`Catch-up of the present's 1 km`](.github/workflows/present-catch-up.y
 gh workflow run present-catch-up.yml
 ```
 
-From then on the [`Daily 1 km of the present`](.github/workflows/present-daily.yml) workflow maps the days up to yesterday twice a day, a new file each pass, and joins a month's files into one once it is over.
+From then on the [`Daily 1 km of the present`](.github/workflows/present-daily.yml) workflow maps the days up to yesterday twice a day, a new file each pass, and joins a month's files into one once it is over. It then maps today to J+3 from CAMS's latest run, and stops before writing anything if the private dataset takes more than 95 GB of its 100.
 
 ## The compute Space
 
