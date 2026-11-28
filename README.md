@@ -247,6 +247,12 @@ Before the catch-up, the [`Pilot of the present's 1 km`](.github/workflows/prese
 gh workflow run present-pilot.yml -f panache=main -f first=2026-10-01 -f last=2026-10-31
 ```
 
+Then the [`Catch-up of the present's 1 km`](.github/workflows/present-catch-up.yml) workflow maps NO2 and ozone from 1 January 2026 to yesterday with the pilot's models, a job a pollutant and month, into the private dataset's `downscaled-live-v1`; a month already there is skipped.
+
+```bash
+gh workflow run present-catch-up.yml
+```
+
 ## The compute Space
 
 Panache's button "compute in high definition" calls a free Hugging Face Space, [`adrien4916/panache-compute`](https://huggingface.co/spaces/adrien4916/panache-compute), which computes a view at ~100 m on request (Panache's D74). A public Space's image can be pulled by anyone, and Panache's repository is private, so the [`Compute Space`](.github/workflows/space.yml) workflow (`panache-archive space`) deploys only what `panache.compute_app` and `panache.fetch_archive` import, worked out from their imports, with the Dockerfile and card of [`space/`](space/). The Space builds itself and its data from this repository's public releases.
