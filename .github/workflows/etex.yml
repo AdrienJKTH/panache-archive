@@ -8,9 +8,10 @@ run-name: >-
 # (Panache's D112, step 2 of its cross-validation). The files are those of winds-europe-v1 and
 # surface-europe-v1, in the same format, published to a release of their own, etex-v1, so that
 # the product's archives keep holding 2013 onwards only. Beside them, the tracer's measurements
-# and HYSPLIT's scores as NOAA ARL's DATEM archive serves them (US government work, public
-# domain; Adrien's word of 2026-11-27 covers these files only). Run by hand; a run again rebuilds
-# and replaces every file (~320 and ~85 MB, and ~200 kB from DATEM).
+# from NOAA ARL's DATEM archive and ARL's page of HYSPLIT's ranks (US government work, public
+# domain), read from web archives: arl.noaa.gov's CloudFront answers 403 to scripts and no longer
+# lists the files (2026-11-28). Run by hand; a run again rebuilds and replaces every file (~320
+# and ~85 MB, and ~175 kB of archived pages, each checked against its SHA-256).
 
 on:
   workflow_dispatch:
@@ -82,30 +83,26 @@ jobs:
           || gh release create "$RELEASE" --title "ERA5 over Europe in October 1994, for ETEX-1"
           --notes-file docs/etex-release.md
           || gh release view "$RELEASE" > /dev/null
-      - name: Fetch and publish
+      - name: Fetch, check and publish
         env:
           GH_TOKEN: ${{ github.token }}
-          DATEM: https://www.arl.noaa.gov/documents/datem/exp_data/etex
-          RESULTS: https://www.arl.noaa.gov/hysplit/datem-tracer-evaluation/hysplit-evaluation-results-using-datem/
-        # arl.noaa.gov answers curl's default agent with 403: the agent names this repository.
+        # The Internet Archive's captures of DATEM's ETEX directory (20 January 2009), and the
+        # University of North Texas's End of Term 2008 capture of ARL's DATEM_results.php.
         run: |
           set -o pipefail
-          fetch() {
-            curl --fail --silent --show-error --location --max-filesize 5000000 --retry 3 \
-              --user-agent "panache-archive (+https://github.com/$GITHUB_REPOSITORY)" \
-              --dump-header "$1.headers" --output "$1" "$2" \
-              || { cat "$1.headers"; return 1; }
-            rm "$1.headers"
-          }
           mkdir datem
-          for name in meas-t1.txt stations.txt readme.txt; do
-            fetch "datem/etex-$name" "$DATEM/$name"
-          done
-          fetch datem/hysplit-datem-results.html "$RESULTS"
-          echo "| File | Bytes | SHA-256 |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          while read -r name sha url; do
+            curl --fail --silent --show-error --location --retry 3 --output "datem/$name" "$url"
+            echo "$sha  datem/$name" | sha256sum --check --strict
+          done <<'FILES'
+          etex-meas-t1.txt 149fe7a6680103eb1dd0b78c6c3878546a307e6140bcef4333bbbf30f3b7685b https://web.archive.org/web/20090120225653id_/http://www.arl.noaa.gov/documents/datem/exp_data/etex/meas-t1.txt
+          etex-readme.txt 103b10e43d83ef69cb579506d2616d503823a62fc2045530a1470c85bb83dd30 https://web.archive.org/web/20090120225520id_/http://www.arl.noaa.gov/documents/datem/exp_data/etex/readme.txt
+          etex-stations.txt 2d68cbf26db030052fb1ac097f8ba75a2190f638bb69d4c1793a663bd8510bfc https://web.archive.org/web/20090120225822id_/http://www.arl.noaa.gov/documents/datem/exp_data/etex/stations.txt
+          hysplit-datem-results.html 95d9c016135a9b57ede77e96051b20bb166f653f7b0955776fe36728ad6e8ebb https://webarchive.library.unt.edu/eot2008/20081004073932id_/http://www.arl.noaa.gov/DATEM_results.php
+          FILES
+          echo "| File | Bytes |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
           for path in datem/*; do
-            echo "| $(basename "$path") | $(stat -c %s "$path") |" \
-              "$(sha256sum "$path" | cut -c1-16) |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| $(basename "$path") | $(stat -c %s "$path") |" >> "$GITHUB_STEP_SUMMARY"
           done
           gh release upload "$RELEASE" datem/* --clobber
