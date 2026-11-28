@@ -6,6 +6,9 @@ name: Real runs experiment
 # plus three recent runs. Panache's `panache-live-runs-experiment` then compares the recent ones
 # with Open-Meteo's bucket, which the live service reads, and scores D98's LightGBM on them all.
 #
+# A month already in the private dataset is not read again, so a failed run is dispatched
+# again as it is.
+#
 # What is read and what comes out is Panache's: into the private dataset's
 # `real-runs-experiment-v1` (`panache_archive.private`), never to a release, an artifact, the log
 # or the summary.
@@ -31,7 +34,7 @@ jobs:
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 3
       matrix:
         include:
           - {name: "ifs-2024-03", first: "2024-03-06", last: "2024-03-31"}
@@ -62,7 +65,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Already read?
+        id: kept
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          NAME: ${{ matrix.name }}
+        run: |
+          uv sync --locked
+          uv run panache-archive private list --folder "$RELEASE" > kept.txt
+          if grep -qx "$NAME.parquet" kept.txt; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Check out Panache
+        if: steps.kept.outputs.found != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: AdrienJKTH/panache
@@ -71,6 +86,7 @@ jobs:
           path: panache
           persist-credentials: false
       - name: The experiment's places
+        if: steps.kept.outputs.found != 'true'
         run: |
           uv venv /tmp/panache --python 3.12
           uv pip install --python /tmp/panache/bin/python ./panache/backend
@@ -82,6 +98,7 @@ jobs:
           Path("places.json").write_text(json.dumps(places))
           EOF
       - name: Read IFS's runs
+        if: steps.kept.outputs.found != 'true'
         env:
           NAME: ${{ matrix.name }}
           FIRST: ${{ matrix.first }}
@@ -92,11 +109,11 @@ jobs:
             --places places.json --out "out/$NAME.parquet" 2>&1 | tee points.log
           grep -E "runs read" points.log >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the points, privately
+        if: steps.kept.outputs.found != 'true'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           NAME: ${{ matrix.name }}
         run: |
-          uv sync --locked
           uv run panache-archive private upload --folder "$RELEASE" "out/$NAME.parquet"
 
   score:

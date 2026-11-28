@@ -43,9 +43,11 @@ import pyarrow.parquet as pq
 
 MIRROR = "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"
 PARAMS = ("2t", "2d", "10u", "10v", "msl", "tp", "ssrd", "tcc")
-ATTEMPTS = 8
-CONCURRENCY = 8
-"""The mirror answers 503 when asked too fast: few requests at once, and patient retries."""
+ATTEMPTS = 30
+LONGEST_PAUSE = 60
+CONCURRENCY = 4
+"""The mirror answers 503, sometimes for several minutes, whatever one client asks of it: few
+requests at once, and patient retries, about 25 minutes on one request before giving up."""
 
 logger = logging.getLogger("ecmwf_points")
 
@@ -87,7 +89,7 @@ def get(http: httpx.Client, url: str, byte_range: tuple[int, int] | None = None)
             if attempt == ATTEMPTS - 1:
                 raise
             logger.warning("%s, trying again: %s", url, error)
-            time.sleep(2**attempt + random.random())
+            time.sleep(min(2**attempt, LONGEST_PAUSE) + 5 * random.random())
     raise AssertionError("unreachable")
 
 
